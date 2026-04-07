@@ -5,7 +5,17 @@ import csv
 from tqdm import tqdm
 from pathlib import Path
 
-def train_model(model, train_loader, val_loader, tokenizer,
+from data_processor.postprocessor import RussianToDigit
+from eval import compute_score
+
+_to_digits = RussianToDigit()
+
+
+def _words_to_digits(words: list[str]) -> str:
+    return _to_digits.convert(" ".join(words))
+
+
+def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
                 epochs=100, device='cuda', lr=1e-3,
                 log_dir='logs', save_best=True, patience=10):
     """
@@ -42,7 +52,9 @@ def train_model(model, train_loader, val_loader, tokenizer,
         model.train()
         total_train_loss = 0
         num_batches = len(train_loader)
-        train_preds: list[list[str]] = []
+        train_pred_digits: list[str] = []
+        train_ref_digits: list[str] = []
+        train_spk_ids: list[str] = []
 
         # Use tqdm for progress bar
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}/{epochs} [Train]')
@@ -70,7 +82,10 @@ def train_model(model, train_loader, val_loader, tokenizer,
             pbar.set_postfix({'loss': loss.item()})
 
             # Decode predictions for this batch
-            train_preds.extend(model.decode(log_probs.detach(), encoder_lengths))
+            decoded = model.decode(log_probs.detach(), encoder_lengths)
+            train_pred_digits.extend(_words_to_digits(w) for w in decoded)
+            train_ref_digits.extend(batch['transcriptions'])
+            train_spk_ids.extend(batch['spk_ids'])
 
             # Log per-batch loss every 50 steps to TensorBoard
             if step % 50 == 0:
@@ -84,7 +99,9 @@ def train_model(model, train_loader, val_loader, tokenizer,
         model.eval()
         total_val_loss = 0
         val_steps = 0
-        val_preds: list[list[str]] = []
+        val_pred_digits: list[str] = []
+        val_ref_digits: list[str] = []
+        val_spk_ids: list[str] = []
 
         with torch.no_grad():
             pbar_val = tqdm(val_loader, desc=f'Epoch {epoch}/{epochs} [Val]')
@@ -107,7 +124,10 @@ def train_model(model, train_loader, val_loader, tokenizer,
                 val_steps += 1
                 pbar_val.set_postfix({'val_loss': loss.item()})
 
-                val_preds.extend(model.decode(log_probs, encoder_lengths))
+                decoded = model.decode(log_probs, encoder_lengths)
+                val_pred_digits.extend(_words_to_digits(w) for w in decoded)
+                val_ref_digits.extend(batch['transcriptions'])
+                val_spk_ids.extend(batch['spk_ids'])
 
         avg_val_loss = total_val_loss / val_steps
         writer.add_scalar('Loss/val_epoch', avg_val_loss, epoch)
@@ -127,13 +147,33 @@ def train_model(model, train_loader, val_loader, tokenizer,
         history['val_loss'].append(avg_val_loss)
         history['lr'].append(current_lr)
 
+        # Compute challenge score on train and val
+        train_score = compute_score(
+            train_pred_digits,
+            train_ref_digits,
+            [s in ind_speakers for s in train_spk_ids],
+        )
+        val_score = compute_score(
+            val_pred_digits,
+            val_ref_digits,
+            [s in ind_speakers for s in val_spk_ids],
+        )
+        writer.add_scalars('Score', {
+            'train': train_score['ind_cer'],
+            'val': val_score['score'],
+        }, epoch)
+        writer.add_scalars('Val_CER', {
+            'ind': val_score['ind_cer'],
+            'ood': val_score['ood_cer'],
+        }, epoch)
+
         # Print summary
         print(f"\nEpoch {epoch}/{epochs}")
         print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.6f}")
-        if train_preds:
-            print(f"  Sample train pred: {' '.join(train_preds[0]) or '<empty>'}")
-        if val_preds:
-            print(f"  Sample val   pred: {' '.join(val_preds[0]) or '<empty>'}")
+        print(f"  Train CER: {train_score['ind_cer']:.2f}%")
+        print(f"  Val   CER: ind={val_score['ind_cer']:.2f}%  ood={val_score['ood_cer']:.2f}%  score={val_score['score']:.2f}%")
+        print(f"  Sample train pred: {train_pred_digits[0]}  (ref: {train_ref_digits[0]})")
+        print(f"  Sample val   pred: {val_pred_digits[0]}  (ref: {val_ref_digits[0]})")
 
         # -------------------- Model checkpointing & early stopping --------------------
         if avg_val_loss < best_val_loss:

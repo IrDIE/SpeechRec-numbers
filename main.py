@@ -46,12 +46,16 @@ def main():
     )
     print(f"Model parameters: {n_params_M:.2f}M")
 
+    # In-domain speakers = those seen in training. Used to split val CER.
+    ind_speakers = set(train_loader.dataset.df["spk_id"].astype(str))
+
     # Train
     train_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         tokenizer=tokenizer,
+        ind_speakers=ind_speakers,
         epochs=100,
         device="cuda" if torch.cuda.is_available() else "cpu",
     )

@@ -65,7 +65,7 @@ class RussianSpeechDataset(Dataset):
             audio = waveform.squeeze().numpy()
         except Exception:
             audio, sr = librosa.load(str(path), sr=None, mono=True)
-        
+
         if sr != self.target_sr:
             audio = librosa.resample(audio, orig_sr=sr, target_sr=self.target_sr)
         # Normalize
@@ -111,19 +111,23 @@ class RussianSpeechDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.cache_dir:
-            return self._get_cached_item(idx)
+            item = self._get_cached_item(idx)
         else:
             # No caching, compute each time
             audio = self.load_audio(self.audio_paths[idx])
             features = self.feature_extractor.extract(audio)
             target_text = self.df.iloc[idx]["spoken"]
             labels = self.tokenizer.encode(target_text)
-            return {
+            item = {
                 'features': features,
                 'feature_length': features.shape[0],
                 'labels': torch.tensor(labels, dtype=torch.long),
                 'label_length': len(labels)
             }
+        # Attach metadata outside the cache so existing caches stay valid.
+        item['transcription'] = str(self.df.iloc[idx]["transcription"])
+        item['spk_id'] = str(self.df.iloc[idx]["spk_id"])
+        return item
 
     def collate_fn(self, batch):
         features = [b["features"] for b in batch]
@@ -147,6 +151,8 @@ class RussianSpeechDataset(Dataset):
             "feature_lengths": torch.tensor(feat_lens, dtype=torch.long),
             "labels": padded_labels,
             "label_lengths": torch.tensor(label_lens, dtype=torch.long),
+            "transcriptions": [b["transcription"] for b in batch],
+            "spk_ids": [b["spk_id"] for b in batch],
         }
 
 
