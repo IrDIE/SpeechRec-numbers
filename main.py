@@ -39,7 +39,7 @@ def train():
         data_root_train=DATA_ROOT,
         data_root_dev=DATA_ROOT,
         batch_size=32,
-        num_workers=4,
+        num_workers=0,
         target_sr=16000,
         n_mels=80,
         train_cache="cache/train",
@@ -79,7 +79,7 @@ def submit(ckpt_path: Path, out_path: Path):
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model = model.to(device).eval()
 
-    loader = create_test_dataloader(data_root=DATA_ROOT, batch_size=32, num_workers=4)
+    loader = create_test_dataloader(data_root=DATA_ROOT, batch_size=32, num_workers=0)
 
     to_digits = RussianToDigit()
     rows: list[tuple[str, str]] = []
