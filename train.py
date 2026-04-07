@@ -42,6 +42,7 @@ def train_model(model, train_loader, val_loader, tokenizer,
         model.train()
         total_train_loss = 0
         num_batches = len(train_loader)
+        train_preds: list[list[str]] = []
 
         # Use tqdm for progress bar
         pbar = tqdm(train_loader, desc=f'Epoch {epoch}/{epochs} [Train]')
@@ -53,10 +54,10 @@ def train_model(model, train_loader, val_loader, tokenizer,
             encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
 
             logits = model(features)
-            log_probs = F.log_softmax(logits, dim=-1).transpose(0, 1)
+            log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
 
             loss = F.ctc_loss(
-                log_probs, labels, encoder_lengths, label_lengths,
+                log_probs.transpose(0, 1), labels, encoder_lengths, label_lengths,
                 blank=tokenizer.pad_id, reduction='mean'
             )
 
@@ -67,6 +68,9 @@ def train_model(model, train_loader, val_loader, tokenizer,
 
             total_train_loss += loss.item()
             pbar.set_postfix({'loss': loss.item()})
+
+            # Decode predictions for this batch
+            train_preds.extend(model.decode(log_probs.detach(), encoder_lengths))
 
             # Log per-batch loss every 50 steps to TensorBoard
             if step % 50 == 0:
@@ -80,6 +84,7 @@ def train_model(model, train_loader, val_loader, tokenizer,
         model.eval()
         total_val_loss = 0
         val_steps = 0
+        val_preds: list[list[str]] = []
 
         with torch.no_grad():
             pbar_val = tqdm(val_loader, desc=f'Epoch {epoch}/{epochs} [Val]')
@@ -91,16 +96,18 @@ def train_model(model, train_loader, val_loader, tokenizer,
                 label_lengths = batch['label_lengths']
 
                 logits = model(features)
-                log_probs = F.log_softmax(logits, dim=-1).transpose(0, 1)
+                log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
 
                 loss = F.ctc_loss(
-                    log_probs, labels, encoder_lengths, label_lengths,
+                    log_probs.transpose(0, 1), labels, encoder_lengths, label_lengths,
                     blank=tokenizer.pad_id, reduction='mean'
                 )
 
                 total_val_loss += loss.item()
                 val_steps += 1
                 pbar_val.set_postfix({'val_loss': loss.item()})
+
+                val_preds.extend(model.decode(log_probs, encoder_lengths))
 
         avg_val_loss = total_val_loss / val_steps
         writer.add_scalar('Loss/val_epoch', avg_val_loss, epoch)
@@ -123,6 +130,10 @@ def train_model(model, train_loader, val_loader, tokenizer,
         # Print summary
         print(f"\nEpoch {epoch}/{epochs}")
         print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.6f}")
+        if train_preds:
+            print(f"  Sample train pred: {' '.join(train_preds[0]) or '<empty>'}")
+        if val_preds:
+            print(f"  Sample val   pred: {' '.join(val_preds[0]) or '<empty>'}")
 
         # -------------------- Model checkpointing & early stopping --------------------
         if avg_val_loss < best_val_loss:

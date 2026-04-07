@@ -1,6 +1,7 @@
 import torch
 
 from data_processor.data import create_dataloaders
+from model.decoder import GreedyDecoder
 from model.encoder import ConformerCTC
 from train import train_model
 
@@ -38,6 +39,7 @@ def main():
         d_model=256,
         nhead=4,
         num_layers=16,
+        decoder=GreedyDecoder(tokenizer),
     )
     n_params_M = (
         sum(p.numel() for p in model.parameters() if p.requires_grad) / 1_000_000
