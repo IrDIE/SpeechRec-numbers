@@ -133,87 +133,103 @@ class DigitToRussian:
         return " ".join(parts)
 
 
-class RussianWordTokenizer:
+class BaseTokenizer:
+    """Common interface for all tokenizers. pad_id is always 0 (doubles as CTC blank)."""
+
+    def __init__(self, vocab: list[str]):
+        self.vocab = vocab
+        self.token2id = {w: i for i, w in enumerate(vocab)}
+        self.id2token = {i: w for w, i in self.token2id.items()}
+        self.pad_id = self.token2id["<pad>"]
+        self.unk_id = self.token2id["<unk>"]
+
+    def encode(self, text: str) -> list[int]:
+        raise NotImplementedError
+
+    def decode(self, ids, skip_special=True) -> str:
+        raise NotImplementedError
+
+    def join(self, tokens: list[str]) -> str:
+        """Join a list of decoded token strings back into text."""
+        raise NotImplementedError
+
+    def __len__(self):
+        return len(self.vocab)
+
+
+class RussianWordTokenizer(BaseTokenizer):
     def __init__(self, word_vocab=None):
-        # Base vocabulary (special tokens + all possible number words)
         base_vocab = [
-            "<pad>",
-            "<sos>",
-            "<eos>",
-            "<unk>",
-            "ноль",
-            "один",
-            "два",
-            "три",
-            "четыре",
-            "пять",
-            "шесть",
-            "семь",
-            "восемь",
-            "девять",
-            "одна",
-            "две",
-            "десять",
-            "одиннадцать",
-            "двенадцать",
-            "тринадцать",
-            "четырнадцать",
-            "пятнадцать",
-            "шестнадцать",
-            "семнадцать",
-            "восемнадцать",
-            "девятнадцать",
-            "двадцать",
-            "тридцать",
-            "сорок",
-            "пятьдесят",
-            "шестьдесят",
-            "семьдесят",
-            "восемьдесят",
-            "девяносто",
-            "сто",
-            "двести",
-            "триста",
-            "четыреста",
-            "пятьсот",
-            "шестьсот",
-            "семьсот",
-            "восемьсот",
-            "девятьсот",
-            "тысяча",
-            "тысячи",
-            "тысяч",
-            "миллион",
-            "миллиона",
-            "миллионов",
+            "<pad>", "<sos>", "<eos>", "<unk>",
+            "ноль", "один", "два", "три", "четыре", "пять",
+            "шесть", "семь", "восемь", "девять", "одна", "две",
+            "десять", "одиннадцать", "двенадцать", "тринадцать",
+            "четырнадцать", "пятнадцать", "шестнадцать", "семнадцать",
+            "восемнадцать", "девятнадцать",
+            "двадцать", "тридцать", "сорок", "пятьдесят",
+            "шестьдесят", "семьдесят", "восемьдесят", "девяносто",
+            "сто", "двести", "триста", "четыреста",
+            "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот",
+            "тысяча", "тысячи", "тысяч",
+            "миллион", "миллиона", "миллионов",
         ]
         if word_vocab:
-            # Add any extra words from the training data
             for w in word_vocab:
                 if w not in base_vocab:
                     base_vocab.append(w)
-        self.vocab = base_vocab
-        self.token2id = {w: i for i, w in enumerate(self.vocab)}
-        self.id2token = {i: w for w, i in self.token2id.items()}
-        self.pad_id = self.token2id["<pad>"]
+        super().__init__(base_vocab)
         self.sos_id = self.token2id["<sos>"]
         self.eos_id = self.token2id["<eos>"]
-        self.unk_id = self.token2id["<unk>"]
 
     def encode(self, text):
-        words = text.lower().split()
-        return [self.token2id.get(w, self.unk_id) for w in words]
+        return [self.token2id.get(w, self.unk_id) for w in text.lower().split()]
 
     def decode(self, ids, skip_special=True):
+        special = {self.pad_id, self.sos_id, self.eos_id}
         tokens = []
         for i in ids:
-            if skip_special and i in (self.pad_id, self.sos_id, self.eos_id):
+            if skip_special and i in special:
                 continue
             tokens.append(self.id2token.get(i, "<unk>"))
         return " ".join(tokens)
 
-    def __len__(self):
-        return len(self.vocab)
+    def join(self, tokens: list[str]) -> str:
+        return " ".join(tokens)
+
+
+class RussianCharTokenizer(BaseTokenizer):
+    """Character-level tokenizer over Russian letters + space."""
+
+    SPACE_TOKEN = "<space>"
+
+    def __init__(self):
+        vocab = ["<pad>", "<unk>", self.SPACE_TOKEN]
+        vocab.extend(chr(c) for c in range(ord("а"), ord("я") + 1))
+        super().__init__(vocab)
+        self.space_id = self.token2id[self.SPACE_TOKEN]
+
+    def encode(self, text):
+        ids = []
+        for ch in text.lower():
+            if ch == " ":
+                ids.append(self.space_id)
+            else:
+                ids.append(self.token2id.get(ch, self.unk_id))
+        return ids
+
+    def decode(self, ids, skip_special=True):
+        chars = []
+        for i in ids:
+            if skip_special and i == self.pad_id:
+                continue
+            if i == self.space_id:
+                chars.append(" ")
+            else:
+                chars.append(self.id2token.get(i, ""))
+        return "".join(chars)
+
+    def join(self, tokens: list[str]) -> str:
+        return "".join(" " if t == self.SPACE_TOKEN else t for t in tokens)
 
 
 class RussianToDigit:

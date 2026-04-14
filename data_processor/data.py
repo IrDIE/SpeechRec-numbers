@@ -10,7 +10,7 @@ import torchaudio
 from torch.utils.data import DataLoader, Dataset
 
 from .mel import MelSpectrogramExtractor
-from .postprocessor import DigitToRussian, RussianWordTokenizer
+from .postprocessor import DigitToRussian, RussianCharTokenizer, RussianWordTokenizer
 
 
 class BaseSpeechDataset(Dataset):
@@ -163,16 +163,19 @@ def create_dataloaders(
     n_mels=80,
     train_cache=None,
     dev_cache=None,
+    tokenizer_type="word",
 ):
-    """Build train and validation dataloaders using Russian words as targets."""
-    # ---- Step 1: Build tokenizer vocabulary from training data ----
-    train_csv_path = Path(data_root_train) / "train.csv"
-    df_train = pd.read_csv(train_csv_path, sep=",")
-    converter = DigitToRussian()
-    all_words = set()
-    for digit_str in df_train["transcription"].astype(str):
-        all_words.update(converter.convert(digit_str).split())
-    tokenizer = RussianWordTokenizer(word_vocab=all_words)
+    """Build train and validation dataloaders. tokenizer_type: 'word' or 'char'."""
+    if tokenizer_type == "char":
+        tokenizer = RussianCharTokenizer()
+    else:
+        train_csv_path = Path(data_root_train) / "train.csv"
+        df_train = pd.read_csv(train_csv_path, sep=",")
+        converter = DigitToRussian()
+        all_words = set()
+        for digit_str in df_train["transcription"].astype(str):
+            all_words.update(converter.convert(digit_str).split())
+        tokenizer = RussianWordTokenizer(word_vocab=all_words)
 
     # ---- Step 2: Create datasets ----
     train_dataset = RussianSpeechDataset(

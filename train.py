@@ -11,10 +11,6 @@ from eval import compute_score
 _to_digits = RussianToDigit()
 
 
-def _words_to_digits(words: list[str]) -> str:
-    return _to_digits.convert(" ".join(words))
-
-
 def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
                 epochs=100, device='cuda', lr=1e-3,
                 log_dir='logs', save_best=True, patience=10):
@@ -83,7 +79,9 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
 
             # Decode predictions for this batch
             decoded = model.decode(log_probs.detach(), encoder_lengths)
-            train_pred_digits.extend(_words_to_digits(w) for w in decoded)
+            train_pred_digits.extend(
+                _to_digits.convert(tokenizer.join(tokens)) for tokens in decoded
+            )
             train_ref_digits.extend(batch['transcriptions'])
             train_spk_ids.extend(batch['spk_ids'])
 
@@ -125,7 +123,9 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
                 pbar_val.set_postfix({'val_loss': loss.item()})
 
                 decoded = model.decode(log_probs, encoder_lengths)
-                val_pred_digits.extend(_words_to_digits(w) for w in decoded)
+                val_pred_digits.extend(
+                    _to_digits.convert(tokenizer.join(tokens)) for tokens in decoded
+                )
                 val_ref_digits.extend(batch['transcriptions'])
                 val_spk_ids.extend(batch['spk_ids'])
 

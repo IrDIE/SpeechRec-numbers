@@ -6,20 +6,19 @@ import torch
 from tqdm import tqdm
 
 from data_processor.data import create_dataloaders, create_test_dataloader
-from data_processor.postprocessor import RussianToDigit, RussianWordTokenizer
+from data_processor.postprocessor import RussianCharTokenizer, RussianToDigit, RussianWordTokenizer
 from model.decoder import GreedyDecoder
 from model.encoder import ConformerCTC
 from train import train_model
 
 
 DATA_ROOT = "data"
+TOKENIZER = "char"  # "word" or "char"
 
 
 def _pick_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
     return "cpu"
 
 
@@ -44,6 +43,7 @@ def train():
         n_mels=80,
         train_cache="cache/train",
         dev_cache="cache/dev",
+        tokenizer_type=TOKENIZER,
     )
 
     print(f"Train samples: {len(train_loader.dataset)}")
@@ -74,7 +74,7 @@ def submit(ckpt_path: Path, out_path: Path):
     device = _pick_device()
     print(f"Using device: {device}")
 
-    tokenizer = RussianWordTokenizer()
+    tokenizer = RussianCharTokenizer() if TOKENIZER == "char" else RussianWordTokenizer()
     model = _build_model(tokenizer)
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model = model.to(device).eval()
@@ -92,8 +92,8 @@ def submit(ckpt_path: Path, out_path: Path):
             log_probs = model.get_log_probs(features)
             decoded = model.decode(log_probs, encoder_lengths)
 
-            for filename, words in zip(batch["filenames"], decoded):
-                rows.append((filename, to_digits.convert(" ".join(words))))
+            for filename, tokens in zip(batch["filenames"], decoded):
+                rows.append((filename, to_digits.convert(tokenizer.join(tokens))))
 
     pd.DataFrame(rows, columns=["filename", "transcription"]).to_csv(out_path, index=False)
     print(f"Wrote {len(rows)} predictions to {out_path}")
