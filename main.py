@@ -28,7 +28,7 @@ def _build_model(tokenizer) -> ConformerCTC:
         vocab_size=len(tokenizer),
         d_model=256,
         nhead=4,
-        num_layers=16,
+        num_layers=8,
         decoder=GreedyDecoder(tokenizer),
     )
 
@@ -38,7 +38,7 @@ def train():
         data_root_train=DATA_ROOT,
         data_root_dev=DATA_ROOT,
         batch_size=32,
-        num_workers=0,
+        num_workers=4,
         target_sr=16000,
         n_mels=80,
         train_cache="cache/train",
