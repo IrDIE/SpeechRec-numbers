@@ -37,8 +37,8 @@ def train():
     train_loader, val_loader, tokenizer = create_dataloaders(
         data_root_train=DATA_ROOT,
         data_root_dev=DATA_ROOT,
-        batch_size=32,
-        num_workers=4,
+        batch_size=64,
+        num_workers=0,
         target_sr=16000,
         n_mels=80,
         train_cache="cache/train",
@@ -67,6 +67,7 @@ def train():
         ind_speakers=ind_speakers,
         epochs=100,
         device=_pick_device(),
+        lr=0.0001,
     )
 
 
