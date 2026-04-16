@@ -41,8 +41,6 @@ def train():
         num_workers=0,
         target_sr=16000,
         n_mels=80,
-        train_cache="cache/train",
-        dev_cache="cache/dev",
         tokenizer_type=TOKENIZER,
         augment_train=True,
     )

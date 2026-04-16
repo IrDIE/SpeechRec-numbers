@@ -1,5 +1,3 @@
-import os
-import hashlib
 from pathlib import Path
 
 import librosa
@@ -8,6 +6,7 @@ import pandas as pd
 import torch
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 from .mel import MelSpectrogramExtractor
 from .postprocessor import DigitToRussian, RussianCharTokenizer, RussianWordTokenizer
@@ -54,15 +53,12 @@ class BaseSpeechDataset(Dataset):
             audio = audio / max_val
         return audio.astype(np.float32)
 
-    def _extract_features(self, idx):
-        audio = self.load_audio(self.audio_paths[idx])
-        return self.feature_extractor.extract(audio)
-
     def __len__(self):
         return len(self.audio_paths)
 
     def __getitem__(self, idx):
-        features = self._extract_features(idx)
+        audio = self.load_audio(self.audio_paths[idx])
+        features = self.feature_extractor.extract(audio)
         return {
             "features": features,
             "feature_length": features.shape[0],
@@ -84,7 +80,12 @@ class BaseSpeechDataset(Dataset):
 
 
 class RussianSpeechDataset(BaseSpeechDataset):
-    """Adds label encoding, on-disk caching, and speaker metadata for train/val."""
+    """Adds label encoding, RAM preloading, and speaker metadata for train/val.
+
+    All audio waveforms are loaded into RAM on construction so that __getitem__
+    never touches disk. Mel extraction and augmentation happen on-the-fly from
+    the in-memory waveforms.
+    """
 
     def __init__(
         self,
@@ -94,17 +95,12 @@ class RussianSpeechDataset(BaseSpeechDataset):
         audio_subdir,
         target_sr=16000,
         n_mels=80,
-        cache_dir=None,
         waveform_augmentor=None,
         spec_augmentor=None,
     ):
         super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels)
         self.tokenizer = tokenizer
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        # waveform_augmentor: called on raw audio numpy array before mel extraction;
-        #   bypasses the on-disk cache so augmentation is fresh each epoch.
         self.waveform_augmentor = waveform_augmentor
-        # spec_augmentor: called on the mel tensor after extraction / cache load.
         self.spec_augmentor = spec_augmentor
 
         converter = DigitToRussian()
@@ -112,18 +108,31 @@ class RussianSpeechDataset(BaseSpeechDataset):
             self.df["transcription"].astype(str).apply(converter.convert)
         )
 
-        if self.cache_dir:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Precompute labels (cheap, do once)
+        self.labels = [
+            self.tokenizer.encode(spoken)
+            for spoken in self.df["spoken"]
+        ]
 
-    def _get_cache_key(self, idx):
-        audio_path = self.audio_paths[idx]
-        mtime = os.path.getmtime(audio_path)
-        unique_str = f"{audio_path.absolute()}_{mtime}_{self.target_sr}"
-        return hashlib.sha256(unique_str.encode()).hexdigest()
+        # Load all audio into RAM
+        print(f"  Loading {len(self.audio_paths)} audio files into RAM...")
+        self._audio = [
+            self.load_audio(p)
+            for p in tqdm(self.audio_paths, leave=False)
+        ]
 
-    def _build_item(self, idx):
-        features = self._extract_features(idx)
-        labels = self.tokenizer.encode(self.df.iloc[idx]["spoken"])
+    def __getitem__(self, idx):
+        audio = self._audio[idx]
+
+        if self.waveform_augmentor is not None:
+            audio = self.waveform_augmentor(audio.copy())
+
+        features = self.feature_extractor.extract(audio)
+
+        if self.spec_augmentor is not None:
+            features = self.spec_augmentor(features)
+
+        labels = self.labels[idx]
         row = self.df.iloc[idx]
         return {
             "features": features,
@@ -134,40 +143,6 @@ class RussianSpeechDataset(BaseSpeechDataset):
             "transcription": str(row["transcription"]),
             "spk_id": str(row["spk_id"]),
         }
-
-    def __getitem__(self, idx):
-        if self.waveform_augmentor is not None:
-            # Apply waveform augmentation before mel extraction — skip cache
-            # because the augmented signal differs every call.
-            audio = self.load_audio(self.audio_paths[idx])
-            audio = self.waveform_augmentor(audio)
-            features = self.feature_extractor.extract(audio)
-            row = self.df.iloc[idx]
-            labels = self.tokenizer.encode(row["spoken"])
-            item = {
-                "features": features,
-                "feature_length": features.shape[0],
-                "labels": torch.tensor(labels, dtype=torch.long),
-                "label_length": len(labels),
-                "filename": str(row["filename"]),
-                "transcription": str(row["transcription"]),
-                "spk_id": str(row["spk_id"]),
-            }
-        elif self.cache_dir:
-            cache_file = self.cache_dir / f"{self._get_cache_key(idx)}.pt"
-            if cache_file.exists():
-                item = torch.load(cache_file, weights_only=False)
-            else:
-                item = self._build_item(idx)
-                torch.save(item, cache_file)
-        else:
-            item = self._build_item(idx)
-
-        if self.spec_augmentor is not None:
-            # Shallow-copy the dict so we don't mutate a cached object
-            item = {**item, "features": self.spec_augmentor(item["features"])}
-
-        return item
 
     def collate_fn(self, batch):
         out = super().collate_fn(batch)
@@ -189,11 +164,9 @@ def create_dataloaders(
     data_root_train,
     data_root_dev,
     batch_size=32,
-    num_workers=4,
+    num_workers=0,
     target_sr=16000,
     n_mels=80,
-    train_cache=None,
-    dev_cache=None,
     tokenizer_type="word",
     augment_train=False,
 ):
@@ -209,7 +182,6 @@ def create_dataloaders(
             all_words.update(converter.convert(digit_str).split())
         tokenizer = RussianWordTokenizer(word_vocab=all_words)
 
-    # ---- Step 2: Create datasets ----
     waveform_aug, spec_aug = None, None
     if augment_train:
         from .augmentation import build_train_augmentation
@@ -222,7 +194,6 @@ def create_dataloaders(
         audio_subdir="train",
         target_sr=target_sr,
         n_mels=n_mels,
-        cache_dir=train_cache,
         waveform_augmentor=waveform_aug,
         spec_augmentor=spec_aug,
     )
@@ -233,10 +204,8 @@ def create_dataloaders(
         audio_subdir="dev",
         target_sr=target_sr,
         n_mels=n_mels,
-        cache_dir=dev_cache,
     )
 
-    # ---- Step 3: Dataloaders ----
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -257,7 +226,7 @@ def create_dataloaders(
 
 
 def create_test_dataloader(
-    data_root, batch_size=32, num_workers=4, target_sr=16000, n_mels=80
+    data_root, batch_size=32, num_workers=0, target_sr=16000, n_mels=80
 ):
     """Build a test dataloader (no labels, no speaker info)."""
     dataset = BaseSpeechDataset(
@@ -273,5 +242,5 @@ def create_test_dataloader(
         shuffle=False,
         collate_fn=dataset.collate_fn,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
     )
