@@ -95,10 +95,17 @@ class RussianSpeechDataset(BaseSpeechDataset):
         target_sr=16000,
         n_mels=80,
         cache_dir=None,
+        waveform_augmentor=None,
+        spec_augmentor=None,
     ):
         super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels)
         self.tokenizer = tokenizer
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        # waveform_augmentor: called on raw audio numpy array before mel extraction;
+        #   bypasses the on-disk cache so augmentation is fresh each epoch.
+        self.waveform_augmentor = waveform_augmentor
+        # spec_augmentor: called on the mel tensor after extraction / cache load.
+        self.spec_augmentor = spec_augmentor
 
         converter = DigitToRussian()
         self.df["spoken"] = (
@@ -129,13 +136,37 @@ class RussianSpeechDataset(BaseSpeechDataset):
         }
 
     def __getitem__(self, idx):
-        if not self.cache_dir:
-            return self._build_item(idx)
-        cache_file = self.cache_dir / f"{self._get_cache_key(idx)}.pt"
-        if cache_file.exists():
-            return torch.load(cache_file)
-        item = self._build_item(idx)
-        torch.save(item, cache_file)
+        if self.waveform_augmentor is not None:
+            # Apply waveform augmentation before mel extraction — skip cache
+            # because the augmented signal differs every call.
+            audio = self.load_audio(self.audio_paths[idx])
+            audio = self.waveform_augmentor(audio)
+            features = self.feature_extractor.extract(audio)
+            row = self.df.iloc[idx]
+            labels = self.tokenizer.encode(row["spoken"])
+            item = {
+                "features": features,
+                "feature_length": features.shape[0],
+                "labels": torch.tensor(labels, dtype=torch.long),
+                "label_length": len(labels),
+                "filename": str(row["filename"]),
+                "transcription": str(row["transcription"]),
+                "spk_id": str(row["spk_id"]),
+            }
+        elif self.cache_dir:
+            cache_file = self.cache_dir / f"{self._get_cache_key(idx)}.pt"
+            if cache_file.exists():
+                item = torch.load(cache_file)
+            else:
+                item = self._build_item(idx)
+                torch.save(item, cache_file)
+        else:
+            item = self._build_item(idx)
+
+        if self.spec_augmentor is not None:
+            # Shallow-copy the dict so we don't mutate a cached object
+            item = {**item, "features": self.spec_augmentor(item["features"])}
+
         return item
 
     def collate_fn(self, batch):
@@ -164,6 +195,7 @@ def create_dataloaders(
     train_cache=None,
     dev_cache=None,
     tokenizer_type="word",
+    augment_train=False,
 ):
     """Build train and validation dataloaders. tokenizer_type: 'word' or 'char'."""
     if tokenizer_type == "char":
@@ -178,6 +210,11 @@ def create_dataloaders(
         tokenizer = RussianWordTokenizer(word_vocab=all_words)
 
     # ---- Step 2: Create datasets ----
+    waveform_aug, spec_aug = None, None
+    if augment_train:
+        from .augmentation import build_train_augmentation
+        waveform_aug, spec_aug = build_train_augmentation(sample_rate=target_sr)
+
     train_dataset = RussianSpeechDataset(
         data_root=data_root_train,
         csv_path=None,
@@ -186,6 +223,8 @@ def create_dataloaders(
         target_sr=target_sr,
         n_mels=n_mels,
         cache_dir=train_cache,
+        waveform_augmentor=waveform_aug,
+        spec_augmentor=spec_aug,
     )
     dev_dataset = RussianSpeechDataset(
         data_root=data_root_dev,

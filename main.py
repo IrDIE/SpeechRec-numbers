@@ -44,6 +44,7 @@ def train():
         train_cache="cache/train",
         dev_cache="cache/dev",
         tokenizer_type=TOKENIZER,
+        augment_train=True,
     )
 
     print(f"Train samples: {len(train_loader.dataset)}")
