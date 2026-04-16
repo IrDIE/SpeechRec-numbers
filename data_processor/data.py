@@ -156,7 +156,7 @@ class RussianSpeechDataset(BaseSpeechDataset):
         elif self.cache_dir:
             cache_file = self.cache_dir / f"{self._get_cache_key(idx)}.pt"
             if cache_file.exists():
-                item = torch.load(cache_file)
+                item = torch.load(cache_file, weights_only=False)
             else:
                 item = self._build_item(idx)
                 torch.save(item, cache_file)
@@ -243,7 +243,7 @@ def create_dataloaders(
         shuffle=True,
         collate_fn=train_dataset.collate_fn,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
     )
     dev_loader = DataLoader(
         dev_dataset,
@@ -251,7 +251,7 @@ def create_dataloaders(
         shuffle=False,
         collate_fn=dev_dataset.collate_fn,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,
     )
     return train_loader, dev_loader, tokenizer
 
