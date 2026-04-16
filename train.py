@@ -39,7 +39,7 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
         writer_csv = csv.writer(f)
         writer_csv.writerow(['epoch', 'train_loss', 'val_loss', 'lr'])
 
-    best_val_loss = float('inf')
+    best_val_score = float('inf')
     epochs_no_improve = 0
     history = {'train_loss': [], 'val_loss': [], 'lr': []}
 
@@ -176,12 +176,14 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
         print(f"  Sample val   pred: {val_pred_digits[0]}  (ref: {val_ref_digits[0]})")
 
         # -------------------- Model checkpointing & early stopping --------------------
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+        # Score is CER-based (lower = better)
+        current_score = val_score['score']
+        if current_score < best_val_score:
+            best_val_score = current_score
             epochs_no_improve = 0
             if save_best:
                 torch.save(model.state_dict(), log_path / 'best_model.pth')
-                print(f"  -> New best model saved (val_loss = {avg_val_loss:.4f})")
+                print(f"  -> New best model saved (score = {current_score:.2f}%)")
         else:
             epochs_no_improve += 1
             if patience > 0 and epochs_no_improve >= patience:
@@ -189,5 +191,5 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
                 break
 
     writer.close()
-    print(f"\nTraining finished. Best validation loss: {best_val_loss:.4f}")
+    print(f"\nTraining finished. Best validation score: {best_val_score:.2f}%")
     return history
