@@ -1,4 +1,33 @@
 import re
+import Levenshtein  # pip install python-Levenshtein
+
+VALID_WORDS = {
+    "ноль", "один", "два", "три", "четыре", "пять",
+    "шесть", "семь", "восемь", "девять", "десять",
+    "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
+    "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать",
+    "двадцать", "тридцать", "сорок", "пятьдесят",
+    "шестьдесят", "семьдесят", "восемьдесят", "девяносто",
+    "сто", "двести", "триста", "четыреста",
+    "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот",
+    "тысяча", "тысячи", "тысяч",
+    "миллион", "миллиона", "миллионов"
+}
+
+def correct_with_dict(pred: str) -> str:
+    words = pred.split()
+    corrected = []
+    for w in words:
+        if w in VALID_WORDS:
+            corrected.append(w)
+        else:
+            # Find closest valid word
+            best = min(VALID_WORDS, key=lambda v: Levenshtein.distance(w, v))
+            if Levenshtein.distance(w, best) <= 2:   # threshold
+                corrected.append(best)
+            else:
+                corrected.append(w)   # keep original if far
+    return " ".join(corrected)
 
 
 class DigitToRussian:
@@ -316,7 +345,70 @@ class RussianToDigit:
         total += current
         return str(total)
 
+class RussianToDigitLevenshtein:
+    def __init__(self, correction_threshold=2):
+        self.word_to_val = {
+            "ноль": 0, "один": 1, "одна": 1, "два": 2, "две": 2,
+            "три": 3, "четыре": 4, "пять": 5, "шесть": 6, "семь": 7,
+            "восемь": 8, "девять": 9,
+            "десять": 10,
+            "одиннадцать": 11, "двенадцать": 12, "тринадцать": 13,
+            "четырнадцать": 14, "пятнадцать": 15, "шестнадцать": 16,
+            "семнадцать": 17, "восемнадцать": 18, "девятнадцать": 19,
+            "двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50,
+            "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80, "девяносто": 90,
+            "сто": 100, "двести": 200, "триста": 300, "четыреста": 400,
+            "пятьсот": 500, "шестьсот": 600, "семьсот": 700, "восемьсот": 800,
+            "девятьсот": 900,
+            "тысяча": 1000, "тысячи": 1000, "тысяч": 1000,
+            "миллион": 1_000_000, "миллиона": 1_000_000, "миллионов": 1_000_000,
+        }
+        self.valid_words = set(self.word_to_val.keys())
+        self.threshold = correction_threshold
 
+    def _correct_word(self, w: str) -> str:
+        if w in self.valid_words:
+            return w
+        # find closest valid word
+        best = min(self.valid_words, key=lambda v: Levenshtein.distance(w, v))
+        if Levenshtein.distance(w, best) <= self.threshold:
+            return best
+        return w  # unchanged, will be rejected later
+
+    def convert(self, text: str) -> str | None:
+        words = text.lower().split()
+        if not words:
+            return ""
+        # Correct each word
+        corrected = [self._correct_word(w) for w in words]
+        total = 0
+        current = 0
+        i = 0
+        while i < len(corrected):
+            w = corrected[i]
+            if w in ("тысяча", "тысячи", "тысяч"):
+                if current == 0:
+                    current = 1
+                total += current * 1000
+                current = 0
+                i += 1
+                continue
+            if w in ("миллион", "миллиона", "миллионов"):
+                if current == 0:
+                    current = 1
+                total += current * 1_000_000
+                current = 0
+                i += 1
+                continue
+            val = self.word_to_val.get(w)
+            if val is None:
+                val = 0
+                # return None
+            current += val
+            i += 1
+        total += current
+        return str(total)
+    
 def prepare_targets():
     import pandas as pd
 

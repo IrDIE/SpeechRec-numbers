@@ -5,10 +5,11 @@ import csv
 from tqdm import tqdm
 from pathlib import Path
 
-from data_processor.postprocessor import RussianToDigit
+from data_processor.postprocessor import RussianToDigit, RussianToDigitLevenshtein
 from eval import compute_score
 
-_to_digits = RussianToDigit()
+# _to_digits = RussianToDigit()
+_to_digits = RussianToDigitLevenshtein()
 
 
 def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
@@ -59,14 +60,15 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
             feature_lengths = batch['feature_lengths']
             labels = batch['labels'].to(device)
             label_lengths = batch['label_lengths']
-            encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
+            # encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
+            encoder_lengths = model.get_encoder_lengths(feature_lengths)
 
             logits = model(features)
             log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
 
             loss = F.ctc_loss(
                 log_probs.transpose(0, 1), labels, encoder_lengths, label_lengths,
-                blank=tokenizer.pad_id, reduction='mean'
+                blank=tokenizer.pad_id, reduction='mean', zero_infinity=True
             )
 
             optimizer.zero_grad()
@@ -78,7 +80,10 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
             pbar.set_postfix({'loss': loss.item()})
 
             # Decode predictions for this batch
-            decoded = model.decode(log_probs.detach(), encoder_lengths)
+            # Decode predictions using the correct encoder lengths
+            with torch.no_grad():
+                decoded = model.decode(log_probs.detach(), encoder_lengths)
+            
             train_pred_digits.extend(
                 _to_digits.convert(tokenizer.join(tokens)) for tokens in decoded
             )
@@ -106,7 +111,9 @@ def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
             for batch in pbar_val:
                 features = batch['features'].to(device)
                 feature_lengths = batch['feature_lengths']
-                encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
+                # encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
+                encoder_lengths = model.get_encoder_lengths(feature_lengths)
+
                 labels = batch['labels'].to(device)
                 label_lengths = batch['label_lengths']
 
