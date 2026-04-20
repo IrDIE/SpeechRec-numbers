@@ -18,7 +18,7 @@ class DataConfig:
     n_mels: int = 80
     target_sr: int = 16000
     hop_length: int = 200        # mel frame stride in samples (200 @ 16kHz = 12.5ms)
-    tokenizer: str = "numeric"   # "char" | "word" | "numeric"
+    tokenizer: str = "normalized_char"  # "char" | "word" | "numeric" | "normalized_char"
 
     # Derived from hop_length: win_length = 2 × hop_length, n_fft = win_length
     win_length: int = dc_field(init=False)

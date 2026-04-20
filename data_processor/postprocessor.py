@@ -1,3 +1,5 @@
+import re
+
 import Levenshtein
 
 # Single source of truth for Russian word → numeric value
@@ -13,7 +15,6 @@ WORD_TO_VAL: dict[str, int] = {
     "сто": 100, "двести": 200, "триста": 300, "четыреста": 400,
     "пятьсот": 500, "шестьсот": 600, "семьсот": 700, "восемьсот": 800, "девятьсот": 900,
     "тысяча": 1000, "тысячи": 1000, "тысяч": 1000,
-    "миллион": 1_000_000, "миллиона": 1_000_000, "миллионов": 1_000_000,
 }
 
 _UNITS    = {1:"один",2:"два",3:"три",4:"четыре",5:"пять",6:"шесть",7:"семь",8:"восемь",9:"девять"}
@@ -230,6 +231,87 @@ class RussianCharTokenizer(BaseTokenizer):
         return "".join(" " if t == self.SPACE_TOKEN else t for t in tokens)
 
 
+_CONSONANTS = "бвгджзйклмнпрстфхцчшщ"
+
+
+def normalize_for_ctc(text: str) -> str:
+    """Acoustic normalization for CTC training on Russian numbers.
+
+    Rules (applied in order):
+      1. тысячи / тысяч → тысяча   (acoustically identical forms)
+      2. дцать → цат               (двадцать → двацат, пятнадцать → пятнацат)
+      3. Remove ь and ъ
+      4. Collapse double consonants (нн → н, тт → т, …)
+    """
+    # 1. Normalize thousand forms at word boundaries
+    words = text.split()
+    words = ["тысяча" if w in ("тысячи", "тысяч") else w for w in words]
+    text = " ".join(words)
+    # 2. Simplify -дцать suffix
+    text = text.replace("дцать", "цат")
+    # 3. Remove soft and hard signs
+    text = text.replace("ь", "").replace("ъ", "")
+    # 4. Collapse double consonants
+    text = re.sub(rf"([{_CONSONANTS}])\1+", r"\1", text)
+    return text
+
+
+def _build_normalized_word_to_val() -> dict[str, int]:
+    """WORD_TO_VAL extended with normalized aliases. Used only by NormalizedRussianToDigit."""
+    extended = dict(WORD_TO_VAL)
+    for w, v in WORD_TO_VAL.items():
+        nw = normalize_for_ctc(w)
+        if nw not in extended:
+            extended[nw] = v
+    return extended
+
+
+class NormalizedCharTokenizer(BaseTokenizer):
+    """Char-level CTC tokenizer with acoustic normalization for Russian numbers (1 000–999 999).
+
+    Applies normalize_for_ctc() before encoding, shrinking the label alphabet from
+    ~32 Cyrillic chars down to ~18 acoustically distinct chars.
+    Vocab is built from the normalized forms of all Russian number words.
+    """
+
+    SPACE_TOKEN = "<space>"
+
+    def __init__(self):
+        chars = sorted({
+            ch
+            for word in WORD_TO_VAL
+            for ch in normalize_for_ctc(word)
+            if ch != " "
+        })
+        vocab = ["<pad>", "<unk>", self.SPACE_TOKEN] + chars
+        super().__init__(vocab)
+        self.space_id = self.token2id[self.SPACE_TOKEN]
+
+    def label_from_digits(self, digit_str: str) -> list[int]:
+        return self.encode(digit_to_russian(digit_str))
+
+    def encode(self, text: str) -> list[int]:
+        text = normalize_for_ctc(text.lower())
+        ids = []
+        for ch in text:
+            if ch == " ":
+                ids.append(self.space_id)
+            else:
+                ids.append(self.token2id.get(ch, self.unk_id))
+        return ids
+
+    def decode(self, ids, skip_special=True) -> str:
+        chars = []
+        for i in ids:
+            if skip_special and i == self.pad_id:
+                continue
+            chars.append(" " if i == self.space_id else self.id2token.get(i, ""))
+        return "".join(chars)
+
+    def join(self, tokens: list[str]) -> str:
+        return "".join(" " if t == self.SPACE_TOKEN else t for t in tokens)
+
+
 class RussianToDigitLevenshtein:
     """Convert Russian number words to digit string, with Levenshtein word correction."""
 
@@ -258,4 +340,37 @@ class RussianToDigitLevenshtein:
                 current = 0
             else:
                 current += WORD_TO_VAL.get(w, 0)
+        return str(total + current)
+
+
+class NormalizedRussianToDigit:
+    """Converter for NormalizedCharTokenizer output.
+
+    Uses an extended lookup that includes normalized word forms (e.g. 'двацат' → 20).
+    Levenshtein correction operates over normalized valid words only.
+    """
+
+    def __init__(self, correction_threshold: int = 2):
+        self._word_to_val = _build_normalized_word_to_val()
+        self.valid_words = set(self._word_to_val.keys())
+        self.threshold = correction_threshold
+
+    def _correct_word(self, w: str) -> str:
+        if w in self.valid_words:
+            return w
+        best = min(self.valid_words, key=lambda v: Levenshtein.distance(w, v))
+        return best if Levenshtein.distance(w, best) <= self.threshold else w
+
+    def convert(self, text: str) -> str:
+        text = text.strip()
+        if text.isdigit():
+            return text
+        words = [self._correct_word(w) for w in text.lower().split()]
+        total = current = 0
+        for w in words:
+            if w == "тысяча":
+                total += (current or 1) * 1000
+                current = 0
+            else:
+                current += self._word_to_val.get(w, 0)
         return str(total + current)

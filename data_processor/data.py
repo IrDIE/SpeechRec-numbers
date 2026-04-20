@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchaudio.transforms import MelSpectrogram
 from tqdm import tqdm
 
-from .postprocessor import RussianCharTokenizer, RussianWordTokenizer, NumericTokenizer
+from .postprocessor import RussianCharTokenizer, RussianWordTokenizer, NumericTokenizer, NormalizedCharTokenizer
 
 
 def load_audio(path: str | Path, target_sr: int = 16000) -> np.ndarray:
@@ -32,6 +32,8 @@ def build_tokenizer(tokenizer_type: str):
         return RussianCharTokenizer()
     if tokenizer_type == "numeric":
         return NumericTokenizer()
+    if tokenizer_type == "normalized_char":
+        return NormalizedCharTokenizer()
     return RussianWordTokenizer()
 
 

@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from data_processor.data import create_dataloaders
-from data_processor.postprocessor import RussianToDigitLevenshtein
+from data_processor.postprocessor import RussianToDigitLevenshtein, NormalizedRussianToDigit
 from eval import compute_score
 from model.encoder import ConformerCTC
 
@@ -55,7 +55,8 @@ def train_model(cfg) -> float:
     ind_speakers = set(train_loader.dataset.df["spk_id"].astype(str))
 
     model = _build_model(cfg, tokenizer).to(device)
-    to_digits = RussianToDigitLevenshtein()
+    to_digits = (NormalizedRussianToDigit() if cfg.data.tokenizer == "normalized_char"
+                 else RussianToDigitLevenshtein())
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model: {n_params/1e6:.2f}M params | vocab={len(tokenizer)} | device={device}")
