@@ -1,202 +1,165 @@
+import csv
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
-import csv
 from tqdm import tqdm
-from pathlib import Path
 
-from data_processor.postprocessor import RussianToDigit, RussianToDigitLevenshtein
+from data_processor.data import create_dataloaders
+from data_processor.postprocessor import RussianToDigitLevenshtein
 from eval import compute_score
-
-# _to_digits = RussianToDigit()
-_to_digits = RussianToDigitLevenshtein()
+from model.encoder import ConformerCTC
 
 
-def train_model(model, train_loader, val_loader, tokenizer, ind_speakers,
-                epochs=100, device='cuda', lr=1e-3,
-                log_dir='logs', save_best=True, patience=10):
-    """
-    Training loop with CTC loss and extensive logging.
+def _build_model(cfg, tokenizer) -> ConformerCTC:
+    from model.decoder import ConstrainedBeamDecoder, GreedyDecoder, LMBeamSearchDecoder
 
-    Args:
-        log_dir: directory to save logs (TensorBoard, CSV, best model)
-        save_best: whether to save best model checkpoint
-        patience: early stopping patience (0 = no early stopping)
-    """
-    model = model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+    if cfg.decoder.type == "constrained":
+        decoder = ConstrainedBeamDecoder(tokenizer, beam_size=cfg.decoder.beam_size)
+    elif cfg.decoder.type == "beam":
+        decoder = LMBeamSearchDecoder(
+            tokenizer, lm_path=cfg.decoder.lm_path,
+            beam_size=cfg.decoder.beam_size, lm_weight=cfg.decoder.lm_weight,
+        )
+    else:
+        decoder = GreedyDecoder(tokenizer)
+
+    return ConformerCTC(
+        input_dim=cfg.data.n_mels,
+        vocab_size=len(tokenizer),
+        d_model=cfg.model.d_model,
+        nhead=cfg.model.nhead,
+        num_layers=cfg.model.num_layers,
+        kernel_size=cfg.model.kernel_size,
+        dropout=cfg.model.dropout,
+        decoder=decoder,
+        num_subsample=cfg.model.num_subsample,
     )
 
-    # Setup logging directories
-    log_path = Path(log_dir)
+
+def train_model(cfg) -> float:
+    """Fully isolated training run. Returns best validation score (lower = better).
+
+    Safe for parallel Optuna trials: no global state, writes to cfg.train.log_dir.
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    log_path = Path(cfg.train.log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_path / 'tensorboard')
-    csv_file = log_path / 'loss_log.csv'
 
-    # Initialize CSV log
-    with open(csv_file, 'w', newline='') as f:
-        writer_csv = csv.writer(f)
-        writer_csv.writerow(['epoch', 'train_loss', 'val_loss', 'lr'])
+    train_loader, val_loader, tokenizer = create_dataloaders(cfg)
+    ind_speakers = set(train_loader.dataset.df["spk_id"].astype(str))
 
-    best_val_score = float('inf')
-    epochs_no_improve = 0
-    history = {'train_loss': [], 'val_loss': [], 'lr': []}
+    model = _build_model(cfg, tokenizer).to(device)
+    to_digits = RussianToDigitLevenshtein()
 
-    for epoch in range(1, epochs + 1):
-        # -------------------- Training --------------------
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model: {n_params/1e6:.2f}M params | vocab={len(tokenizer)} | device={device}")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=cfg.train.lr_factor, patience=cfg.train.lr_patience,
+    )
+
+    writer = SummaryWriter(log_dir=log_path / "tensorboard")
+    csv_file = log_path / "loss_log.csv"
+    with open(csv_file, "w", newline="") as f:
+        csv.writer(f).writerow(["epoch", "train_loss", "val_loss", "lr"])
+
+    best_val_score = float("inf")
+    no_improve = 0
+
+    for epoch in range(1, cfg.train.epochs + 1):
+        # ---- Train ----
         model.train()
-        total_train_loss = 0
-        num_batches = len(train_loader)
-        train_pred_digits: list[str] = []
-        train_ref_digits: list[str] = []
-        train_spk_ids: list[str] = []
+        train_loss = 0.0
+        pred_d, ref_d, spk_ids = [], [], []
 
-        # Use tqdm for progress bar
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch}/{epochs} [Train]')
-        for step, batch in enumerate(pbar):
-            features = batch['features'].to(device)
-            feature_lengths = batch['feature_lengths']
-            labels = batch['labels'].to(device)
-            label_lengths = batch['label_lengths']
-            # encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
-            encoder_lengths = model.get_encoder_lengths(feature_lengths)
+        for step, batch in enumerate(tqdm(train_loader, desc=f"Ep {epoch} [train]")):
+            features = batch["features"].to(device)
+            enc_lens = model.get_encoder_lengths(batch["feature_lengths"])
+            labels = batch["labels"].to(device)
 
             logits = model(features)
-            log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
-
+            log_probs = F.log_softmax(logits, dim=-1)
             loss = F.ctc_loss(
-                log_probs.transpose(0, 1), labels, encoder_lengths, label_lengths,
-                blank=tokenizer.pad_id, reduction='mean', zero_infinity=True
+                log_probs.transpose(0, 1), labels, enc_lens, batch["label_lengths"],
+                blank=tokenizer.pad_id, reduction="mean", zero_infinity=True,
             )
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
             optimizer.step()
+            train_loss += loss.item()
 
-            total_train_loss += loss.item()
-            pbar.set_postfix({'loss': loss.item()})
-
-            # Decode predictions for this batch
-            # Decode predictions using the correct encoder lengths
             with torch.no_grad():
-                decoded = model.decode(log_probs.detach(), encoder_lengths)
-            
-            train_pred_digits.extend(
-                _to_digits.convert(tokenizer.join(tokens)) for tokens in decoded
-            )
-            train_ref_digits.extend(batch['transcriptions'])
-            train_spk_ids.extend(batch['spk_ids'])
+                decoded = model.decode(log_probs.detach(), enc_lens)
+            pred_d.extend(to_digits.convert(tokenizer.join(t)) for t in decoded)
+            ref_d.extend(batch["transcriptions"])
+            spk_ids.extend(batch["spk_ids"])
 
-            # Log per-batch loss every 50 steps to TensorBoard
             if step % 50 == 0:
-                writer.add_scalar('Loss/train_batch', loss.item(),
-                                  (epoch-1)*num_batches + step)
+                writer.add_scalar("Loss/train_batch", loss.item(),
+                                  (epoch - 1) * len(train_loader) + step)
 
-        avg_train_loss = total_train_loss / num_batches
-        writer.add_scalar('Loss/train_epoch', avg_train_loss, epoch)
+        avg_train = train_loss / len(train_loader)
+        writer.add_scalar("Loss/train_epoch", avg_train, epoch)
 
-        # -------------------- Validation --------------------
+        # ---- Validate ----
         model.eval()
-        total_val_loss = 0
-        val_steps = 0
-        val_pred_digits: list[str] = []
-        val_ref_digits: list[str] = []
-        val_spk_ids: list[str] = []
+        val_loss = 0.0
+        val_pred, val_ref, val_spk = [], [], []
 
         with torch.no_grad():
-            pbar_val = tqdm(val_loader, desc=f'Epoch {epoch}/{epochs} [Val]')
-            for batch in pbar_val:
-                features = batch['features'].to(device)
-                feature_lengths = batch['feature_lengths']
-                # encoder_lengths = torch.ceil(feature_lengths.float() / 4).long()
-                encoder_lengths = model.get_encoder_lengths(feature_lengths)
-
-                labels = batch['labels'].to(device)
-                label_lengths = batch['label_lengths']
+            for batch in tqdm(val_loader, desc=f"Ep {epoch} [val]"):
+                features = batch["features"].to(device)
+                enc_lens = model.get_encoder_lengths(batch["feature_lengths"])
+                labels = batch["labels"].to(device)
 
                 logits = model(features)
-                log_probs = F.log_softmax(logits, dim=-1)  # (B, T, V)
-
+                log_probs = F.log_softmax(logits, dim=-1)
                 loss = F.ctc_loss(
-                    log_probs.transpose(0, 1), labels, encoder_lengths, label_lengths,
-                    blank=tokenizer.pad_id, reduction='mean'
+                    log_probs.transpose(0, 1), labels, enc_lens, batch["label_lengths"],
+                    blank=tokenizer.pad_id, reduction="mean",
                 )
+                val_loss += loss.item()
 
-                total_val_loss += loss.item()
-                val_steps += 1
-                pbar_val.set_postfix({'val_loss': loss.item()})
+                decoded = model.decode(log_probs, enc_lens)
+                val_pred.extend(to_digits.convert(tokenizer.join(t)) for t in decoded)
+                val_ref.extend(batch["transcriptions"])
+                val_spk.extend(batch["spk_ids"])
 
-                decoded = model.decode(log_probs, encoder_lengths)
-                val_pred_digits.extend(
-                    _to_digits.convert(tokenizer.join(tokens)) for tokens in decoded
-                )
-                val_ref_digits.extend(batch['transcriptions'])
-                val_spk_ids.extend(batch['spk_ids'])
+        avg_val = val_loss / len(val_loader)
+        writer.add_scalar("Loss/val_epoch", avg_val, epoch)
+        scheduler.step(avg_val)
+        lr = optimizer.param_groups[0]["lr"]
 
-        avg_val_loss = total_val_loss / val_steps
-        writer.add_scalar('Loss/val_epoch', avg_val_loss, epoch)
+        train_score = compute_score(pred_d, ref_d, [s in ind_speakers for s in spk_ids])
+        val_score = compute_score(val_pred, val_ref, [s in ind_speakers for s in val_spk])
 
-        # Update learning rate scheduler
-        scheduler.step(avg_val_loss)
-        current_lr = optimizer.param_groups[0]['lr']
-        writer.add_scalar('LR', current_lr, epoch)
+        writer.add_scalars("Score", {"train": train_score["ind_cer"], "val": val_score["score"]}, epoch)
+        writer.add_scalars("Val_CER", {"ind": val_score["ind_cer"], "ood": val_score["ood_cer"]}, epoch)
 
-        # Log to CSV
-        with open(csv_file, 'a', newline='') as f:
-            writer_csv = csv.writer(f)
-            writer_csv.writerow([epoch, avg_train_loss, avg_val_loss, current_lr])
+        with open(csv_file, "a", newline="") as f:
+            csv.writer(f).writerow([epoch, avg_train, avg_val, lr])
 
-        # Save history
-        history['train_loss'].append(avg_train_loss)
-        history['val_loss'].append(avg_val_loss)
-        history['lr'].append(current_lr)
+        print(f"\nEp {epoch}: train={avg_train:.4f} val={avg_val:.4f} lr={lr:.2e}")
+        print(f"  train_cer={train_score['ind_cer']:.2f}%")
+        print(f"  val: ind={val_score['ind_cer']:.2f}% ood={val_score['ood_cer']:.2f}% score={val_score['score']:.2f}%")
+        print(f"  pred={pred_d[0]!r}  ref={ref_d[0]!r}")
 
-        # Compute challenge score on train and val
-        train_score = compute_score(
-            train_pred_digits,
-            train_ref_digits,
-            [s in ind_speakers for s in train_spk_ids],
-        )
-        val_score = compute_score(
-            val_pred_digits,
-            val_ref_digits,
-            [s in ind_speakers for s in val_spk_ids],
-        )
-        writer.add_scalars('Score', {
-            'train': train_score['ind_cer'],
-            'val': val_score['score'],
-        }, epoch)
-        writer.add_scalars('Val_CER', {
-            'ind': val_score['ind_cer'],
-            'ood': val_score['ood_cer'],
-        }, epoch)
-
-        # Print summary
-        print(f"\nEpoch {epoch}/{epochs}")
-        print(f"  Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.6f}")
-        print(f"  Train CER: {train_score['ind_cer']:.2f}%")
-        print(f"  Val   CER: ind={val_score['ind_cer']:.2f}%  ood={val_score['ood_cer']:.2f}%  score={val_score['score']:.2f}%")
-        print(f"  Sample train pred: {train_pred_digits[0]}  (ref: {train_ref_digits[0]})")
-        print(f"  Sample val   pred: {val_pred_digits[0]}  (ref: {val_ref_digits[0]})")
-
-        # -------------------- Model checkpointing & early stopping --------------------
-        # Score is CER-based (lower = better)
-        current_score = val_score['score']
-        if current_score < best_val_score:
-            best_val_score = current_score
-            epochs_no_improve = 0
-            if save_best:
-                torch.save(model.state_dict(), log_path / 'best_model.pth')
-                print(f"  -> New best model saved (score = {current_score:.2f}%)")
+        if val_score["score"] < best_val_score:
+            best_val_score = val_score["score"]
+            no_improve = 0
+            torch.save(model.state_dict(), log_path / "best_model.pth")
+            print(f"  -> saved (score={best_val_score:.2f}%)")
         else:
-            epochs_no_improve += 1
-            if patience > 0 and epochs_no_improve >= patience:
-                print(f"Early stopping after {epoch} epochs (no improvement for {patience} epochs)")
+            no_improve += 1
+            if cfg.train.patience > 0 and no_improve >= cfg.train.patience:
+                print(f"Early stopping at epoch {epoch}")
                 break
 
     writer.close()
-    print(f"\nTraining finished. Best validation score: {best_val_score:.2f}%")
-    return history
+    print(f"Done. Best val score: {best_val_score:.2f}%")
+    return best_val_score

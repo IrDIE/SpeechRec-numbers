@@ -26,25 +26,12 @@ class WaveformAugmentor:
                 "Install it with: pip install audiomentations"
             ) from e
 
-        transforms = [
-            # Random gain ±6 dB — simulates different microphone levels
+        self.augment = A.Compose([
             A.Gain(min_gain_db=-6.0, max_gain_db=6.0, p=0.4),
-            # Low-level Gaussian noise — microphone self-noise
             A.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.3),
-            # Time stretch without changing pitch — speaking rate variation
             A.TimeStretch(min_rate=0.85, max_rate=1.15, leave_length_unchanged=False, p=0.3),
-            # Pitch shift ±2 semitones — speaker pitch variation
             A.PitchShift(min_semitones=-2.0, max_semitones=2.0, p=0.3),
-        ]
-
-        # RoomSimulator requires pyroomacoustics; add only if available
-        try:
-            import pyroomacoustics  # noqa: F401
-            transforms.append(A.RoomSimulator(p=0.2))
-        except ImportError:
-            pass
-
-        self.augment = A.Compose(transforms, p=p)
+        ], p=p)
         self.sample_rate = sample_rate
 
     def __call__(self, audio: np.ndarray) -> np.ndarray:

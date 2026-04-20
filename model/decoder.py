@@ -119,12 +119,11 @@ class ConstrainedBeamDecoder:
 
     @staticmethod
     def _build_trie(tokenizer, max_num: int) -> dict:
-        from data_processor.postprocessor import DigitToRussian
-        converter = DigitToRussian()
+        from data_processor.postprocessor import digit_to_russian
         trie: dict = {}
         for n in range(1, max_num + 1):
             node = trie
-            for tok in tokenizer.encode(converter.convert(n)):
+            for tok in tokenizer.label_from_digits(str(n)):
                 node = node.setdefault(tok, {})
             node[None] = True  # complete valid sequence marker
         return trie
