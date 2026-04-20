@@ -60,7 +60,8 @@ def train_model(cfg) -> float:
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model: {n_params/1e6:.2f}M params | vocab={len(tokenizer)} | device={device}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr,
+                                   weight_decay=cfg.train.weight_decay, betas=cfg.train.betas)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=cfg.train.lr_factor, patience=cfg.train.lr_patience,
     )

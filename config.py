@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dc_field
 
 
 @dataclass
@@ -20,6 +20,14 @@ class DataConfig:
     hop_length: int = 200        # mel frame stride in samples (200 @ 16kHz = 12.5ms)
     tokenizer: str = "numeric"   # "char" | "word" | "numeric"
 
+    # Derived from hop_length: win_length = 2 × hop_length, n_fft = win_length
+    win_length: int = dc_field(init=False)
+    n_fft: int = dc_field(init=False)
+
+    def __post_init__(self):
+        self.win_length = self.hop_length * 2
+        self.n_fft = self.win_length
+
 
 @dataclass
 class AugConfig:
@@ -35,6 +43,8 @@ class TrainConfig:
     epochs: int = 100
     batch_size: int = 32
     lr: float = 1e-4
+    weight_decay: float = 1e-2
+    betas: tuple = (0.9, 0.999)
     patience: int = 10
     grad_clip: float = 1.0
     lr_factor: float = 0.5
@@ -53,8 +63,8 @@ class DecoderConfig:
 
 @dataclass
 class Config:
-    model: ModelConfig = field(default_factory=ModelConfig)
-    data: DataConfig = field(default_factory=DataConfig)
-    aug: AugConfig = field(default_factory=AugConfig)
-    train: TrainConfig = field(default_factory=TrainConfig)
-    decoder: DecoderConfig = field(default_factory=DecoderConfig)
+    model: ModelConfig = dc_field(default_factory=ModelConfig)
+    data: DataConfig = dc_field(default_factory=DataConfig)
+    aug: AugConfig = dc_field(default_factory=AugConfig)
+    train: TrainConfig = dc_field(default_factory=TrainConfig)
+    decoder: DecoderConfig = dc_field(default_factory=DecoderConfig)

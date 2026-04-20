@@ -38,7 +38,8 @@ def build_tokenizer(tokenizer_type: str):
 class BaseSpeechDataset(Dataset):
     """Audio loading + mel feature extraction. Sufficient for test/inference."""
 
-    def __init__(self, data_root, csv_path, audio_subdir, target_sr=16000, n_mels=80, hop_length=200):
+    def __init__(self, data_root, csv_path, audio_subdir, target_sr=16000,
+                 n_mels=80, hop_length=200, n_fft=400, win_length=400):
         self.data_root = Path(data_root)
         self.target_sr = target_sr
 
@@ -54,8 +55,8 @@ class BaseSpeechDataset(Dataset):
                 self.audio_paths.append(self.data_root / audio_subdir / fn)
 
         self._mel = MelSpectrogram(
-            sample_rate=target_sr, n_mels=n_mels, n_fft=400,
-            hop_length=hop_length, win_length=400, f_min=0.0, f_max=8000.0, norm=None,
+            sample_rate=target_sr, n_mels=n_mels, n_fft=n_fft,
+            hop_length=hop_length, win_length=win_length, f_min=0.0, f_max=8000.0, norm=None,
         )
 
     def _extract(self, audio: np.ndarray) -> torch.Tensor:
@@ -93,8 +94,9 @@ class RussianSpeechDataset(BaseSpeechDataset):
     """Adds label encoding, RAM preloading, and speaker metadata for train/val."""
 
     def __init__(self, data_root, csv_path, tokenizer, audio_subdir,
-                 target_sr=16000, n_mels=80, hop_length=200, waveform_augmentor=None, spec_augmentor=None):
-        super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels, hop_length)
+                 target_sr=16000, n_mels=80, hop_length=200, n_fft=400, win_length=400,
+                 waveform_augmentor=None, spec_augmentor=None):
+        super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels, hop_length, n_fft, win_length)
         self.tokenizer = tokenizer
         self.waveform_augmentor = waveform_augmentor
         self.spec_augmentor = spec_augmentor
@@ -158,12 +160,13 @@ def create_dataloaders(cfg):
     train_ds = RussianSpeechDataset(
         data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,
         audio_subdir="train", target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
-        hop_length=cfg.data.hop_length, waveform_augmentor=waveform_aug, spec_augmentor=spec_aug,
+        hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
+        waveform_augmentor=waveform_aug, spec_augmentor=spec_aug,
     )
     dev_ds = RussianSpeechDataset(
         data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,
         audio_subdir="dev", target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
-        hop_length=cfg.data.hop_length,
+        hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
     )
 
     train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size, shuffle=True,
@@ -176,7 +179,8 @@ def create_dataloaders(cfg):
 def create_test_dataloader(cfg, batch_size: int = 32):
     ds = BaseSpeechDataset(
         data_root=cfg.data.data_root, csv_path=None, audio_subdir="test",
-        target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels, hop_length=cfg.data.hop_length,
+        target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
+        hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
     )
     return DataLoader(ds, batch_size=batch_size, shuffle=False,
                       collate_fn=ds.collate_fn, num_workers=0, pin_memory=False)
