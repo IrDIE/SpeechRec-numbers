@@ -37,7 +37,7 @@ def objective(trial: optuna.Trial) -> float:
     cfg.model.num_layers   = trial.suggest_int("num_layers", 4, 20)
     cfg.model.kernel_size  = trial.suggest_categorical("kernel_size", [9, 15, 31])
     cfg.model.ff_expansion = trial.suggest_categorical("ff_expansion", [2, 4])
-    cfg.model.num_subsample = trial.suggest_categorical("num_subsample", [2, 3])
+    cfg.model.num_subsample = 2
     cfg.model.dropout      = trial.suggest_float("dropout", 0.0, 0.4)
 
     # Training

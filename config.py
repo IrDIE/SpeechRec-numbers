@@ -8,7 +8,7 @@ class ModelConfig:
     num_layers: int = 8
     kernel_size: int = 9
     dropout: float = 0.1
-    num_subsample: int = 3        # 2^n total downsampling; 3 → 8× (≈21 frames/2sec)
+    num_subsample: int = 2        # 2^n total downsampling; 2 → 4× (≈40 frames/2sec)
     ff_expansion: int = 4
 
 

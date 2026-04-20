@@ -127,7 +127,7 @@ def train_model(cfg) -> float:
                 log_probs = F.log_softmax(logits, dim=-1)
                 loss = F.ctc_loss(
                     log_probs.transpose(0, 1), labels, enc_lens, batch["label_lengths"],
-                    blank=tokenizer.pad_id, reduction="mean",
+                    blank=tokenizer.pad_id, reduction="mean", zero_infinity=True,
                 )
                 val_loss += loss.item()
 
