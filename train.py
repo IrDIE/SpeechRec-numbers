@@ -43,6 +43,10 @@ def train_model(cfg) -> float:
 
     Safe for parallel Optuna trials: no global state, writes to cfg.train.log_dir.
     """
+    torch.manual_seed(cfg.train.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.train.seed)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log_path = Path(cfg.train.log_dir)
     log_path.mkdir(parents=True, exist_ok=True)

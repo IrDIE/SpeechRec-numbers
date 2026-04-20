@@ -8,7 +8,7 @@ class ModelConfig:
     num_layers: int = 8
     kernel_size: int = 9
     dropout: float = 0.1
-    num_subsample: int = 2
+    num_subsample: int = 3        # 2^n total downsampling; 3 → 8× (≈21 frames/2sec)
     ff_expansion: int = 4
 
 
@@ -17,7 +17,8 @@ class DataConfig:
     data_root: str = "data"
     n_mels: int = 80
     target_sr: int = 16000
-    tokenizer: str = "char"  # "char" | "word" | "numeric"
+    hop_length: int = 200        # mel frame stride in samples (200 @ 16kHz = 12.5ms)
+    tokenizer: str = "numeric"   # "char" | "word" | "numeric"
 
 
 @dataclass
@@ -39,6 +40,7 @@ class TrainConfig:
     lr_factor: float = 0.5
     lr_patience: int = 5
     log_dir: str = "logs"
+    seed: int = 42
 
 
 @dataclass
