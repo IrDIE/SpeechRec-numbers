@@ -6,7 +6,7 @@ import torch
 from tqdm import tqdm
 from typing import Literal
 from data_processor.data import create_dataloaders, create_test_dataloader
-from data_processor.postprocessor import RussianCharTokenizer, RussianWordTokenizer, RussianToDigitLevenshtein
+from data_processor.postprocessor import RussianCharTokenizer, RussianWordTokenizer, NumericTokenizer, RussianToDigitLevenshtein
 from model.decoder import ConstrainedBeamDecoder, GreedyDecoder, LMBeamSearchDecoder
 from model.encoder import ConformerCTC
 from train import train_model
@@ -15,15 +15,19 @@ from train import train_model
 POSSIBLE_DECODERS = Literal["greedy", "beam", "constrained"]
 DATA_ROOT = "data"
 # DATA_ROOT = "/mnt/d/ITMO/2026-SpeechRec/gp1/data/"
-TOKENIZER = "char"      # "word" or "char"
-DECODER   = "constrained"    # "greedy" | "beam" | "constrained"
+TOKENIZER    = "char"         # "char" | "word" | "numeric"
+DECODER      = "constrained"  # "greedy" | "beam" | "constrained"
+NUM_SUBSAMPLE = 2             # stride-2 conv layers: 2→4x, 3→8x, 4→16x
+                              # numeric tokenizer has ~6 tokens/utt → 3 or 4 works well
 CKPT_PATH = Path("logs/best_model.pth")
 LM_DECODER_PATH = "speechtotext_ru_ru_lm_deployable_v2.0/4gram-pruned-0_1_7_9-ru-lm-set-1.0.bin"
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def build_tokenizer():
-    return RussianCharTokenizer() if TOKENIZER == "char" else RussianWordTokenizer()
+    if TOKENIZER == "char":    return RussianCharTokenizer()
+    if TOKENIZER == "numeric": return NumericTokenizer()
+    return RussianWordTokenizer()
 
 
 def load_model(ckpt_path: Path = CKPT_PATH, decoder_type: POSSIBLE_DECODERS = DECODER,
@@ -65,6 +69,7 @@ def build_model(tokenizer, decoder_type: POSSIBLE_DECODERS = DECODER) -> Conform
         num_layers=8,
         decoder=decoder,
         kernel_size=9,
+        num_subsample=NUM_SUBSAMPLE,
     )
 
 

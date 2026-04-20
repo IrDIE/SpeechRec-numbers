@@ -96,13 +96,14 @@ class ConformerBlock(nn.Module):
 
 class ConformerEncoder(nn.Module):
     def __init__(self, input_dim=80, d_model=256, nhead=4, num_layers=16,
-                 kernel_size=31, dropout=0.1, ff_expansion=4):
+                 kernel_size=31, dropout=0.1, ff_expansion=4, num_subsample=2):
         super().__init__()
-        self.subsample = nn.Sequential(
-            nn.Conv1d(input_dim, d_model, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=1)
-        )
+        self.num_subsample = num_subsample
+        # Stack of stride-2 Conv1d layers: total downsampling = 2^num_subsample
+        layers = [nn.Conv1d(input_dim, d_model, kernel_size=3, stride=2, padding=1)]
+        for _ in range(num_subsample - 1):
+            layers += [nn.ReLU(), nn.Conv1d(d_model, d_model, kernel_size=3, stride=2, padding=1)]
+        self.subsample = nn.Sequential(*layers)
         self.pos_encoding = nn.Parameter(torch.zeros(1, 5000, d_model))
         self.layers = nn.ModuleList([
             ConformerBlock(d_model, nhead, kernel_size, dropout, ff_expansion)
@@ -119,20 +120,24 @@ class ConformerEncoder(nn.Module):
 
 class ConformerCTC(nn.Module):
     def __init__(self, input_dim=80, d_model=256, nhead=4, num_layers=16,
-                 kernel_size=31, vocab_size=32, dropout=0.1, decoder=None):
+                 kernel_size=31, vocab_size=32, dropout=0.1, decoder=None,
+                 num_subsample=2):
         super().__init__()
-        self.encoder = ConformerEncoder(input_dim, d_model, nhead, num_layers, kernel_size, dropout)
+        self.encoder = ConformerEncoder(input_dim, d_model, nhead, num_layers,
+                                        kernel_size, dropout, num_subsample=num_subsample)
         self.ctc_head = nn.Linear(d_model, vocab_size)
         self.decoder = decoder
 
     def forward(self, x, mask=None):
         encoder_out = self.encoder(x, mask)
-        return self.ctc_head(encoder_out) # torch.Size([64, 114, 256])
+        return self.ctc_head(encoder_out)
 
     def get_encoder_lengths(self, input_lengths):
-        """Calculates lengths after 4x subsampling (stride=2 twice)."""
-        l = (input_lengths + 2*1 - 3) // 2 + 1
-        return (l + 2*1 - 3) // 2 + 1
+        """Lengths after num_subsample stride-2 conv layers (kernel=3, pad=1)."""
+        l = input_lengths
+        for _ in range(self.encoder.num_subsample):
+            l = (l + 2*1 - 3) // 2 + 1
+        return l
 
     def get_log_probs(self, x, mask=None):
         return F.log_softmax(self.forward(x, mask), dim=-1)
