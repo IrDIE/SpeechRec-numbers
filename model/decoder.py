@@ -106,9 +106,9 @@ class LMBeamSearchDecoder(BeamSearchDecoder):
 class ConstrainedBeamDecoder:
     """CTC beam search restricted to valid Russian number sequences (1–max_num).
 
-    Builds a trie over all valid token-ID sequences so that only grammatically
-    correct Russian number phrases can appear in any beam at any point.
-    Works best with RussianWordTokenizer.
+    Builds a trie by encoding every valid phrase with the tokenizer, so it works
+    with both RussianCharTokenizer (trie over char IDs) and RussianWordTokenizer
+    (trie over word IDs).
     """
 
     def __init__(self, tokenizer, beam_size: int = 50, max_num: int = 999_999):
@@ -121,17 +121,12 @@ class ConstrainedBeamDecoder:
     def _build_trie(tokenizer, max_num: int) -> dict:
         from data_processor.postprocessor import DigitToRussian
         converter = DigitToRussian()
-        t2i = tokenizer.token2id
         trie: dict = {}
         for n in range(1, max_num + 1):
             node = trie
-            for w in converter.convert(n).split():
-                tok = t2i.get(w)
-                if tok is None:
-                    break
+            for tok in tokenizer.encode(converter.convert(n)):
                 node = node.setdefault(tok, {})
-            else:
-                node[None] = True  # complete valid sequence marker
+            node[None] = True  # complete valid sequence marker
         return trie
 
     def decode(self, log_probs: torch.Tensor, lengths: torch.Tensor) -> list[list[str]]:

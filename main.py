@@ -16,7 +16,7 @@ POSSIBLE_DECODERS = Literal["greedy", "beam", "constrained"]
 DATA_ROOT = "data"
 # DATA_ROOT = "/mnt/d/ITMO/2026-SpeechRec/gp1/data/"
 TOKENIZER = "char"      # "word" or "char"
-DECODER   = "greedy"    # "greedy" | "beam" | "constrained"
+DECODER   = "constrained"    # "greedy" | "beam" | "constrained"
 CKPT_PATH = Path("logs/best_model.pth")
 LM_DECODER_PATH = "speechtotext_ru_ru_lm_deployable_v2.0/4gram-pruned-0_1_7_9-ru-lm-set-1.0.bin"
 # ─────────────────────────────────────────────────────────────────────────────
@@ -24,6 +24,29 @@ LM_DECODER_PATH = "speechtotext_ru_ru_lm_deployable_v2.0/4gram-pruned-0_1_7_9-ru
 
 def build_tokenizer():
     return RussianCharTokenizer() if TOKENIZER == "char" else RussianWordTokenizer()
+
+
+def load_model(ckpt_path: Path = CKPT_PATH, decoder_type: POSSIBLE_DECODERS = DECODER,
+               device: str | None = None) -> tuple[ConformerCTC, object]:
+    """Build model + tokenizer, load checkpoint, return (model.eval(), tokenizer)."""
+    if device is None:
+        device = _pick_device()
+    tokenizer = build_tokenizer()
+    model = build_model(tokenizer, decoder_type).to(device)
+    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
+    return model.eval(), tokenizer
+
+
+def build_val_loader(tokenizer, batch_size: int = 32):
+    """Create the dev dataloader without loading train data."""
+    from data_processor.data import RussianSpeechDataset
+    from torch.utils.data import DataLoader
+    ds = RussianSpeechDataset(
+        data_root=DATA_ROOT, csv_path=None, tokenizer=tokenizer,
+        audio_subdir="dev", target_sr=16000, n_mels=80,
+    )
+    return DataLoader(ds, batch_size=batch_size, shuffle=False,
+                      collate_fn=ds.collate_fn, num_workers=0, pin_memory=False)
 
 
 def build_model(tokenizer, decoder_type: POSSIBLE_DECODERS = DECODER) -> ConformerCTC:
@@ -85,11 +108,7 @@ def train():
 def submit(ckpt_path: Path, out_path: Path):
     device = _pick_device()
     print(f"Using device: {device}")
-
-    tokenizer = build_tokenizer()
-    model = build_model(tokenizer).to(device)
-    model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
-    model.eval()
+    model, tokenizer = load_model(ckpt_path, device=device)
 
     loader = create_test_dataloader(data_root=DATA_ROOT, batch_size=32, num_workers=0)
     to_digits = RussianToDigitLevenshtein()
