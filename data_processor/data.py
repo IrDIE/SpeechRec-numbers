@@ -97,11 +97,12 @@ class RussianSpeechDataset(BaseSpeechDataset):
 
     def __init__(self, data_root, csv_path, tokenizer, audio_subdir,
                  target_sr=16000, n_mels=80, hop_length=200, n_fft=400, win_length=400,
-                 waveform_augmentor=None, spec_augmentor=None):
+                 waveform_augmentor=None, spec_augmentor=None, vtlp_augmentor=None):
         super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels, hop_length, n_fft, win_length)
         self.tokenizer = tokenizer
         self.waveform_augmentor = waveform_augmentor
         self.spec_augmentor = spec_augmentor
+        self.vtlp_augmentor = vtlp_augmentor
 
         self.labels = [
             tokenizer.label_from_digits(s)
@@ -118,6 +119,8 @@ class RussianSpeechDataset(BaseSpeechDataset):
         features = self._extract(audio)
         if self.spec_augmentor is not None:
             features = self.spec_augmentor(features)
+        if self.vtlp_augmentor is not None:
+            features = self.vtlp_augmentor(features)
         row = self.df.iloc[idx]
         return {
             "features": features,
@@ -145,11 +148,11 @@ class RussianSpeechDataset(BaseSpeechDataset):
 
 def create_dataloaders(cfg):
     """Build train and validation dataloaders from a Config object."""
-    from .augmentation import WaveformAugmentor, SpecAugment
+    from .augmentation import VTLPAugment, WaveformAugmentor, SpecAugment
 
     tokenizer = build_tokenizer(cfg.data.tokenizer)
 
-    waveform_aug = spec_aug = None
+    waveform_aug = spec_aug = vtlp_aug = None
     if cfg.aug.enabled:
         waveform_aug = WaveformAugmentor(sample_rate=cfg.data.target_sr)
         spec_aug = SpecAugment(
@@ -158,12 +161,13 @@ def create_dataloaders(cfg):
             n_freq_masks=cfg.aug.n_freq_masks,
             n_time_masks=cfg.aug.n_time_masks,
         )
+        vtlp_aug = VTLPAugment(sample_rate=cfg.data.target_sr)
 
     train_ds = RussianSpeechDataset(
         data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,
         audio_subdir="train", target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
         hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
-        waveform_augmentor=waveform_aug, spec_augmentor=spec_aug,
+        waveform_augmentor=waveform_aug, spec_augmentor=spec_aug, vtlp_augmentor=vtlp_aug,
     )
     dev_ds = RussianSpeechDataset(
         data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,

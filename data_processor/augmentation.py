@@ -1,4 +1,4 @@
-"""Audio augmentation pipeline: waveform-level (audiomentations) + SpecAugment."""
+"""Audio augmentation pipeline: waveform-level (audiomentations) + SpecAugment + VTLP."""
 import numpy as np
 import torch
 import torch.nn as nn
@@ -31,6 +31,14 @@ class WaveformAugmentor:
             A.AddGaussianNoise(min_amplitude=0.001, max_amplitude=0.015, p=0.3),
             A.TimeStretch(min_rate=0.85, max_rate=1.15, leave_length_unchanged=False, p=0.3),
             A.PitchShift(min_semitones=-2.0, max_semitones=2.0, p=0.3),
+            # True speed perturbation (pitch + tempo together) — matches TTA at inference
+            A.Resample(
+                min_sample_rate=int(sample_rate * 0.9),
+                max_sample_rate=int(sample_rate * 1.1),
+                p=0.4,
+            ),
+            A.Mp3Compression(min_bitrate=32, max_bitrate=128, p=0.2),
+            A.RoomSimulator(p=0.3),
         ], p=p)
         self.sample_rate = sample_rate
 
@@ -77,13 +85,46 @@ class SpecAugment(nn.Module):
         Returns:
             Augmented tensor of the same shape.
         """
-        # torchaudio transforms expect (freq, time) — transpose in/out
         x = mel.T.unsqueeze(0)  # (1, n_mels, time)
         for mask in self.freq_masks:
             x = mask(x)
         for mask in self.time_masks:
             x = mask(x)
         return x.squeeze(0).T  # back to (time, n_mels)
+
+
+# ---------------------------------------------------------------------------
+# Vocal Tract Length Perturbation (VTLP)
+# ---------------------------------------------------------------------------
+
+class VTLPAugment:
+    """Frequency-axis warping to simulate vocal tract length variation.
+
+    Helps with OOD speaker generalization by simulating different vocal tract sizes.
+    Applied at the mel spectrogram level (time, n_mels).
+    """
+
+    def __init__(self, alpha_range: tuple = (0.85, 1.15), f_hi: int = 4800, sample_rate: int = 16000):
+        self.alpha_range = alpha_range
+        self.f_hi = f_hi
+        self.sr = sample_rate
+
+    def __call__(self, mel: torch.Tensor) -> torch.Tensor:
+        """Warp frequency axis. mel: (time, n_mels) → (time, n_mels)."""
+        alpha = np.random.uniform(*self.alpha_range)
+        n_mels = mel.shape[1]
+        f_boundary = self.f_hi / (self.sr / 2) * n_mels
+
+        orig_idx = torch.arange(n_mels, dtype=torch.float32)
+        warp = torch.where(
+            orig_idx < f_boundary,
+            orig_idx * alpha,
+            n_mels - (n_mels - orig_idx) * (1 - alpha * f_boundary / n_mels) / (1 - f_boundary / n_mels),
+        ).clamp(0, n_mels - 1)
+
+        floor = warp.long().clamp(0, n_mels - 2)
+        frac = (warp - floor.float()).unsqueeze(0)  # (1, n_mels)
+        return mel[:, floor] * (1 - frac) + mel[:, floor + 1] * frac
 
 
 # ---------------------------------------------------------------------------

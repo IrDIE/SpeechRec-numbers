@@ -8,6 +8,7 @@ from tqdm import tqdm
 from config import Config
 from data_processor.data import build_tokenizer, create_test_dataloader
 from data_processor.postprocessor import RussianToDigitLevenshtein
+from best_config import best_config
 from train import _build_model, train_model
 
 
@@ -22,6 +23,8 @@ def load_model(cfg: Config, ckpt_path: Path):
 
 def submit(cfg: Config, ckpt_path: Path, out_path: Path):
     model, tokenizer, device = load_model(cfg, ckpt_path)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: {n_params/1e6:.2f}M params | vocab={len(tokenizer)} | device={device}")
     loader = create_test_dataloader(cfg)
     to_digits = RussianToDigitLevenshtein()
     rows = []
@@ -47,7 +50,7 @@ def main():
     parser.add_argument("--decoder", default=None, help="greedy | beam | constrained")
     args = parser.parse_args()
 
-    cfg = Config()
+    cfg = best_config()
     if args.data_root:
         cfg.data.data_root = args.data_root
     if args.tokenizer:
