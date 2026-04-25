@@ -6,59 +6,72 @@ import pandas as pd
 import torch
 import torchaudio
 from torch.utils.data import DataLoader, Dataset
+from torchaudio.transforms import MelSpectrogram
 from tqdm import tqdm
 
-from .mel import MelSpectrogramExtractor
-from .postprocessor import DigitToRussian, RussianCharTokenizer, RussianWordTokenizer
+from .postprocessor import RussianCharTokenizer, RussianWordTokenizer, NumericTokenizer, NormalizedCharTokenizer
+
+
+def load_audio(path: str | Path, target_sr: int = 16000) -> np.ndarray:
+    """Load audio file, resample to target_sr, normalize to [-1, 1]."""
+    try:
+        waveform, sr = torchaudio.load(str(path))
+        audio = waveform.squeeze().numpy()
+    except Exception:
+        audio, sr = librosa.load(str(path), sr=None, mono=True)
+    if sr != target_sr:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+    max_val = np.abs(audio).max()
+    if max_val > 0:
+        audio = audio / max_val
+    return audio.astype(np.float32)
+
+
+def build_tokenizer(tokenizer_type: str):
+    if tokenizer_type == "char":
+        return RussianCharTokenizer()
+    if tokenizer_type == "numeric":
+        return NumericTokenizer()
+    if tokenizer_type == "normalized_char":
+        return NormalizedCharTokenizer()
+    return RussianWordTokenizer()
 
 
 class BaseSpeechDataset(Dataset):
     """Audio loading + mel feature extraction. Sufficient for test/inference."""
 
-    def __init__(
-        self, data_root, csv_path, audio_subdir, target_sr=16000, n_mels=80
-    ):
+    def __init__(self, data_root, csv_path, audio_subdir, target_sr=16000,
+                 n_mels=80, hop_length=200, n_fft=400, win_length=400):
         self.data_root = Path(data_root)
-        self.audio_subdir = audio_subdir
         self.target_sr = target_sr
 
         if csv_path is None:
             csv_path = self.data_root / f"{audio_subdir}.csv"
         self.df = pd.read_csv(csv_path, sep=",")
 
-        # Resolve audio paths (filenames may already include the subdir prefix).
         self.audio_paths = []
-        for filename in self.df["filename"]:
-            if "/" in filename or "\\" in filename:
-                full_path = self.data_root / filename
+        for fn in self.df["filename"]:
+            if "/" in str(fn) or "\\" in str(fn):
+                self.audio_paths.append(self.data_root / fn)
             else:
-                full_path = self.data_root / self.audio_subdir / filename
-            self.audio_paths.append(full_path)
+                self.audio_paths.append(self.data_root / audio_subdir / fn)
 
-        self.feature_extractor = MelSpectrogramExtractor(
-            sample_rate=target_sr, n_mels=n_mels
+        self._mel = MelSpectrogram(
+            sample_rate=target_sr, n_mels=n_mels, n_fft=n_fft,
+            hop_length=hop_length, win_length=win_length, f_min=0.0, f_max=8000.0, norm=None,
         )
 
-    def load_audio(self, path):
-        try:
-            waveform, sr = torchaudio.load(str(path))
-            audio = waveform.squeeze().numpy()
-        except Exception:
-            audio, sr = librosa.load(str(path), sr=None, mono=True)
-
-        if sr != self.target_sr:
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=self.target_sr)
-        max_val = np.abs(audio).max()
-        if max_val > 0:
-            audio = audio / max_val
-        return audio.astype(np.float32)
+    def _extract(self, audio: np.ndarray) -> torch.Tensor:
+        wav = torch.from_numpy(audio)
+        mel = self._mel(wav)             # (n_mels, time)
+        return torch.log(mel + 1e-6).T  # (time, n_mels)
 
     def __len__(self):
         return len(self.audio_paths)
 
     def __getitem__(self, idx):
-        audio = self.load_audio(self.audio_paths[idx])
-        features = self.feature_extractor.extract(audio)
+        audio = load_audio(self.audio_paths[idx], self.target_sr)
+        features = self._extract(audio)
         return {
             "features": features,
             "feature_length": features.shape[0],
@@ -69,76 +82,51 @@ class BaseSpeechDataset(Dataset):
         feat_lens = [b["feature_length"] for b in batch]
         max_feat_len = max(feat_lens)
         n_mels = batch[0]["features"].shape[1]
-        padded_features = torch.zeros(len(batch), max_feat_len, n_mels)
+        padded = torch.zeros(len(batch), max_feat_len, n_mels)
         for i, b in enumerate(batch):
-            padded_features[i, : b["feature_length"], :] = b["features"]
+            padded[i, : b["feature_length"]] = b["features"]
         return {
-            "features": padded_features,
+            "features": padded,
             "feature_lengths": torch.tensor(feat_lens, dtype=torch.long),
             "filenames": [b["filename"] for b in batch],
         }
 
 
 class RussianSpeechDataset(BaseSpeechDataset):
-    """Adds label encoding, RAM preloading, and speaker metadata for train/val.
+    """Adds label encoding, RAM preloading, and speaker metadata for train/val."""
 
-    All audio waveforms are loaded into RAM on construction so that __getitem__
-    never touches disk. Mel extraction and augmentation happen on-the-fly from
-    the in-memory waveforms.
-    """
-
-    def __init__(
-        self,
-        data_root,
-        csv_path,
-        tokenizer,
-        audio_subdir,
-        target_sr=16000,
-        n_mels=80,
-        waveform_augmentor=None,
-        spec_augmentor=None,
-    ):
-        super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels)
+    def __init__(self, data_root, csv_path, tokenizer, audio_subdir,
+                 target_sr=16000, n_mels=80, hop_length=200, n_fft=400, win_length=400,
+                 waveform_augmentor=None, spec_augmentor=None, vtlp_augmentor=None):
+        super().__init__(data_root, csv_path, audio_subdir, target_sr, n_mels, hop_length, n_fft, win_length)
         self.tokenizer = tokenizer
         self.waveform_augmentor = waveform_augmentor
         self.spec_augmentor = spec_augmentor
+        self.vtlp_augmentor = vtlp_augmentor
 
-        converter = DigitToRussian()
-        self.df["spoken"] = (
-            self.df["transcription"].astype(str).apply(converter.convert)
-        )
-
-        # Precompute labels (cheap, do once)
         self.labels = [
-            self.tokenizer.encode(spoken)
-            for spoken in self.df["spoken"]
+            tokenizer.label_from_digits(s)
+            for s in self.df["transcription"].astype(str)
         ]
 
-        # Load all audio into RAM
         print(f"  Loading {len(self.audio_paths)} audio files into RAM...")
-        self._audio = [
-            self.load_audio(p)
-            for p in tqdm(self.audio_paths, leave=False)
-        ]
+        self._audio = [load_audio(p, target_sr) for p in tqdm(self.audio_paths, leave=False)]
 
     def __getitem__(self, idx):
         audio = self._audio[idx]
-
         if self.waveform_augmentor is not None:
             audio = self.waveform_augmentor(audio.copy())
-
-        features = self.feature_extractor.extract(audio)
-
+        features = self._extract(audio)
         if self.spec_augmentor is not None:
             features = self.spec_augmentor(features)
-
-        labels = self.labels[idx]
+        if self.vtlp_augmentor is not None:
+            features = self.vtlp_augmentor(features)
         row = self.df.iloc[idx]
         return {
             "features": features,
             "feature_length": features.shape[0],
-            "labels": torch.tensor(labels, dtype=torch.long),
-            "label_length": len(labels),
+            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
+            "label_length": len(self.labels[idx]),
             "filename": str(row["filename"]),
             "transcription": str(row["transcription"]),
             "spk_id": str(row["spk_id"]),
@@ -146,13 +134,11 @@ class RussianSpeechDataset(BaseSpeechDataset):
 
     def collate_fn(self, batch):
         out = super().collate_fn(batch)
-
         label_lens = [b["label_length"] for b in batch]
         max_label_len = max(label_lens)
         padded_labels = torch.zeros(len(batch), max_label_len, dtype=torch.long)
         for i, b in enumerate(batch):
             padded_labels[i, : b["label_length"]] = b["labels"]
-
         out["labels"] = padded_labels
         out["label_lengths"] = torch.tensor(label_lens, dtype=torch.long)
         out["transcriptions"] = [b["transcription"] for b in batch]
@@ -160,87 +146,48 @@ class RussianSpeechDataset(BaseSpeechDataset):
         return out
 
 
-def create_dataloaders(
-    data_root_train,
-    data_root_dev,
-    batch_size=32,
-    num_workers=0,
-    target_sr=16000,
-    n_mels=80,
-    tokenizer_type="word",
-    augment_train=False,
-):
-    """Build train and validation dataloaders. tokenizer_type: 'word' or 'char'."""
-    if tokenizer_type == "char":
-        tokenizer = RussianCharTokenizer()
-    else:
-        train_csv_path = Path(data_root_train) / "train.csv"
-        df_train = pd.read_csv(train_csv_path, sep=",")
-        converter = DigitToRussian()
-        all_words = set()
-        for digit_str in df_train["transcription"].astype(str):
-            all_words.update(converter.convert(digit_str).split())
-        tokenizer = RussianWordTokenizer(word_vocab=all_words)
+def create_dataloaders(cfg):
+    """Build train and validation dataloaders from a Config object."""
+    from .augmentation import VTLPAugment, WaveformAugmentor, SpecAugment
 
-    waveform_aug, spec_aug = None, None
-    if augment_train:
-        from .augmentation import build_train_augmentation
-        waveform_aug, spec_aug = build_train_augmentation(sample_rate=target_sr)
+    tokenizer = build_tokenizer(cfg.data.tokenizer)
 
-    train_dataset = RussianSpeechDataset(
-        data_root=data_root_train,
-        csv_path=None,
-        tokenizer=tokenizer,
-        audio_subdir="train",
-        target_sr=target_sr,
-        n_mels=n_mels,
-        waveform_augmentor=waveform_aug,
-        spec_augmentor=spec_aug,
+    waveform_aug = spec_aug = vtlp_aug = None
+    if cfg.aug.enabled:
+        waveform_aug = WaveformAugmentor(sample_rate=cfg.data.target_sr)
+        spec_aug = SpecAugment(
+            freq_mask_param=cfg.aug.freq_mask_param,
+            time_mask_param=cfg.aug.time_mask_param,
+            n_freq_masks=cfg.aug.n_freq_masks,
+            n_time_masks=cfg.aug.n_time_masks,
+        )
+        # vtlp_aug = VTLPAugment(sample_rate=cfg.data.target_sr)
+        vtlp_aug = None
+
+    train_ds = RussianSpeechDataset(
+        data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,
+        audio_subdir="train", target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
+        hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
+        waveform_augmentor=waveform_aug, spec_augmentor=spec_aug, vtlp_augmentor=vtlp_aug,
     )
-    dev_dataset = RussianSpeechDataset(
-        data_root=data_root_dev,
-        csv_path=None,
-        tokenizer=tokenizer,
-        audio_subdir="dev",
-        target_sr=target_sr,
-        n_mels=n_mels,
+    dev_ds = RussianSpeechDataset(
+        data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,
+        audio_subdir="dev", target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
+        hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
     )
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=train_dataset.collate_fn,
-        num_workers=num_workers,
-        pin_memory=False,
-    )
-    dev_loader = DataLoader(
-        dev_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=dev_dataset.collate_fn,
-        num_workers=num_workers,
-        pin_memory=False,
-    )
+    train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size, shuffle=True,
+                              collate_fn=train_ds.collate_fn, num_workers=0, pin_memory=False)
+    dev_loader = DataLoader(dev_ds, batch_size=cfg.train.batch_size, shuffle=False,
+                            collate_fn=dev_ds.collate_fn, num_workers=0, pin_memory=False)
     return train_loader, dev_loader, tokenizer
 
 
-def create_test_dataloader(
-    data_root, batch_size=32, num_workers=0, target_sr=16000, n_mels=80
-):
-    """Build a test dataloader (no labels, no speaker info)."""
-    dataset = BaseSpeechDataset(
-        data_root=data_root,
-        csv_path=None,
-        audio_subdir="test",
-        target_sr=target_sr,
-        n_mels=n_mels,
+def create_test_dataloader(cfg, batch_size: int = 32):
+    ds = BaseSpeechDataset(
+        data_root=cfg.data.data_root, csv_path=None, audio_subdir="test",
+        target_sr=cfg.data.target_sr, n_mels=cfg.data.n_mels,
+        hop_length=cfg.data.hop_length, n_fft=cfg.data.n_fft, win_length=cfg.data.win_length,
     )
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=dataset.collate_fn,
-        num_workers=num_workers,
-        pin_memory=False,
-    )
+    return DataLoader(ds, batch_size=batch_size, shuffle=False,
+                      collate_fn=ds.collate_fn, num_workers=0, pin_memory=False)

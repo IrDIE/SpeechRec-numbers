@@ -1,7 +1,9 @@
 data
+weights
 cache
 logs
 .DS_Store
+.zed
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
