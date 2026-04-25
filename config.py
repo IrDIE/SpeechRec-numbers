@@ -5,9 +5,9 @@ from dataclasses import dataclass, field as dc_field
 class ModelConfig:
     d_model: int = 128
     nhead: int = 4
-    num_layers: int = 8
-    kernel_size: int = 9
-    dropout: float = 0.1
+    num_layers: int = 10
+    kernel_size: int = 15
+    dropout: float = 0.008033891308982799
     num_subsample: int = 2        # 2^n total downsampling; 2 → 4× (≈40 frames/2sec)
     ff_expansion: int = 4
 
@@ -17,7 +17,7 @@ class DataConfig:
     data_root: str = "data"
     n_mels: int = 80
     target_sr: int = 16000
-    hop_length: int = 200        # mel frame stride in samples (200 @ 16kHz = 12.5ms)
+    hop_length: int = 160        # mel frame stride in samples (160 @ 16kHz = 10ms)
     tokenizer: str = "normalized_char"  # "char" | "word" | "numeric" | "normalized_char"
 
     # Derived from hop_length: win_length = 2 × hop_length, n_fft = win_length
@@ -32,8 +32,8 @@ class DataConfig:
 @dataclass
 class AugConfig:
     enabled: bool = True
-    freq_mask_param: int = 27
-    time_mask_param: int = 70
+    freq_mask_param: int = 18
+    time_mask_param: int = 66
     n_freq_masks: int = 2
     n_time_masks: int = 2
 
@@ -42,9 +42,9 @@ class AugConfig:
 class TrainConfig:
     epochs: int = 100
     batch_size: int = 32
-    lr: float = 1e-4
-    weight_decay: float = 1e-2
-    betas: tuple = (0.9, 0.999)
+    lr: float = 0.0006854678486846137
+    weight_decay: float = 0.0018828754733551862
+    betas: tuple = (0.95, 0.999)
     patience: int = 10
     grad_clip: float = 1.0
     lr_factor: float = 0.5
