@@ -56,7 +56,7 @@ class TrainConfig:
 @dataclass
 class DecoderConfig:
     type: str = "constrained"  # "greedy" | "beam" | "constrained"
-    beam_size: int = 50
+    beam_size: int = 10000
     lm_path: str = ""
     lm_weight: float = 0.5
 

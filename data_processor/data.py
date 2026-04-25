@@ -161,7 +161,8 @@ def create_dataloaders(cfg):
             n_freq_masks=cfg.aug.n_freq_masks,
             n_time_masks=cfg.aug.n_time_masks,
         )
-        vtlp_aug = VTLPAugment(sample_rate=cfg.data.target_sr)
+        # vtlp_aug = VTLPAugment(sample_rate=cfg.data.target_sr)
+        vtlp_aug = None
 
     train_ds = RussianSpeechDataset(
         data_root=cfg.data.data_root, csv_path=None, tokenizer=tokenizer,
